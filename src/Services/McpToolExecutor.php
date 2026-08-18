@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Events\McpToolInvocationFinished;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Support\McpInvocationOutcome;
 use Padosoft\AskMyDocsMcpPack\Services\McpClient;
@@ -53,41 +54,64 @@ final readonly class McpToolExecutor
 
         $invocationId = (string) Str::uuid();
         $startedAt = microtime(true);
-        if ($connection->server->auth_mode === 'oauth') {
-            $this->oauth->refreshIfNeeded($connection);
-        }
-        $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
-        $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
-        $provenance = [
+        $baseProvenance = [
             'server_id' => $connection->server->getKey(),
+            'server_name' => $connection->server->name,
             'connection_id' => $connection->public_id,
             'tool_remote_name' => $tool->remote_name,
             'tool_local_name' => $tool->local_name,
             'invocation_id' => $invocationId,
             'timestamp' => now()->toIso8601String(),
-            'latency_ms' => (int) round((microtime(true) - $startedAt) * 1000),
         ];
-        $artifact = $this->artifacts->make($result, $provenance, (string) $actor->getKey());
+        try {
+            if ($connection->server->auth_mode === 'oauth') {
+                $this->oauth->refreshIfNeeded($connection);
+            }
+            $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
+            $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $provenance = $baseProvenance + ['latency_ms' => $latencyMs];
+            $artifact = $this->artifacts->make($result, $provenance, (string) $actor->getKey());
 
-        if ($result->isInputRequired()) {
-            $interaction = $this->pending->create(
-                $connection,
+            if ($result->isInputRequired()) {
+                $interaction = $this->pending->create(
+                    $connection,
+                    $actor,
+                    $conversationId,
+                    'mrtr',
+                    [
+                        'localName' => $localName,
+                        'arguments' => $arguments,
+                        'projectKey' => $projectKey,
+                        'requestState' => $result->requestState,
+                    ],
+                    ['inputRequests' => $result->inputRequests, 'message' => 'The MCP server requires additional input.'],
+                );
+                $outcome = new McpInvocationOutcome('input_required', $artifact, $interaction->public_id, $interaction->prompt_json);
+                $this->emit(new McpToolInvocationFinished($tool, $arguments, $actor, $conversationId, $outcome, $provenance, $latencyMs));
+
+                return $outcome;
+            }
+
+            $outcome = new McpInvocationOutcome($result->isError ? 'error' : ($result->isTask() ? 'task_accepted' : 'completed'), $artifact);
+            $this->emit(new McpToolInvocationFinished($tool, $arguments, $actor, $conversationId, $outcome, $provenance, $latencyMs));
+
+            return $outcome;
+        } catch (\Throwable $exception) {
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $this->emit(new McpToolInvocationFinished(
+                $tool,
+                $arguments,
                 $actor,
                 $conversationId,
-                'mrtr',
-                [
-                    'localName' => $localName,
-                    'arguments' => $arguments,
-                    'projectKey' => $projectKey,
-                    'requestState' => $result->requestState,
-                ],
-                ['inputRequests' => $result->inputRequests, 'message' => 'The MCP server requires additional input.'],
-            );
+                null,
+                $baseProvenance + ['latency_ms' => $latencyMs],
+                $latencyMs,
+                $exception,
+            ));
 
-            return new McpInvocationOutcome('input_required', $artifact, $interaction->public_id, $interaction->prompt_json);
+            throw $exception;
         }
-
-        return new McpInvocationOutcome($result->isError ? 'error' : ($result->isTask() ? 'task_accepted' : 'completed'), $artifact);
     }
 
     /** @param array<string,mixed> $response */
@@ -148,5 +172,18 @@ final readonly class McpToolExecutor
         }
 
         return McpConnectionTool::query()->with(['connection.server'])->findOrFail($toolId);
+    }
+
+    private function emit(McpToolInvocationFinished $event): void
+    {
+        try {
+            event($event);
+        } catch (\Throwable $exception) {
+            try {
+                report($exception);
+            } catch (\Throwable) {
+                // Observability must never change the tool invocation outcome.
+            }
+        }
     }
 }

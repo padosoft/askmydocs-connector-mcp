@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorMcp\Tests\Feature;
 
+use Illuminate\Support\Facades\Event;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Events\McpToolInvocationFinished;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
@@ -25,6 +27,7 @@ final class ToolInteractionTest extends TestCase
 
     public function test_write_confirmation_and_mrtr_resume_the_original_tool_call(): void
     {
+        Event::fake([McpToolInvocationFinished::class]);
         app(TenantContext::class)->set('acme');
         $actor = TestUser::query()->create(['name' => 'Marco']);
         $server = McpServerDefinition::query()->create([
@@ -87,6 +90,12 @@ final class ToolInteractionTest extends TestCase
         $this->assertSame('request-state-1', $calls[2]->params['requestState'] ?? null);
         $this->assertSame(['record_id' => 'record-42'], $calls[2]->params['inputResponses'] ?? null);
         $this->assertSame(['query' => 'latest'], $calls[2]->params['arguments'] ?? null);
+        Event::assertDispatchedTimes(McpToolInvocationFinished::class, 3);
+        Event::assertDispatched(
+            McpToolInvocationFinished::class,
+            static fn (McpToolInvocationFinished $event): bool => $event->outcome?->status === 'completed'
+                && $event->provenance['tool_remote_name'] === 'records.update',
+        );
     }
 
     private function tool(McpConnection $connection, string $remoteName, string $localName, bool $confirmation): McpConnectionTool
