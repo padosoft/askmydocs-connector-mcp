@@ -1,0 +1,79 @@
+{
+    "name": "padosoft/askmydocs-connector-mcp",
+    "description": "Per-user MCP connections for AskMyDocs — OAuth accounts, tenant/project scoping, discovered tool policy, and encrypted credentials on top of askmydocs-mcp-pack v2.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": [
+        "laravel",
+        "askmydocs",
+        "connectors",
+        "mcp",
+        "model-context-protocol",
+        "oauth",
+        "tool-calling",
+        "padosoft"
+    ],
+    "authors": [
+        {
+            "name": "Lorenzo Padovani",
+            "email": "lorenzo.padovani@padosoft.com"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/database": "^12.0|^13.0",
+        "illuminate/http": "^12.0|^13.0",
+        "illuminate/routing": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0",
+        "nesbot/carbon": "^2.0|^3.0",
+        "padosoft/askmydocs-connector-base": "^1.4",
+        "padosoft/askmydocs-mcp-pack": "^2.0@dev"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.18",
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^10.0|^11.0",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsConnectorMcp\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsConnectorMcp\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Padosoft\\AskMyDocsConnectorMcp\\McpConnectorServiceProvider"
+            ]
+        }
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../askmydocs-mcp-pack",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "padosoft/askmydocs-mcp-pack": "2.0.x-dev"
+                }
+            }
+        }
+    ],
+    "scripts": {
+        "analyse": "phpstan analyse --memory-limit=512M",
+        "format": "pint",
+        "test": "phpunit"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true
+    }
+}
