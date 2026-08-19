@@ -11,6 +11,7 @@ final readonly class McpArtifactEnvelope
      * @param  list<array<string,mixed>>  $attachments
      * @param  array<string,mixed>  $meta
      * @param  array<string,mixed>  $provenance
+     * @param  array<string,mixed>|null  $app
      */
     public function __construct(
         public string $llmText,
@@ -19,12 +20,27 @@ final readonly class McpArtifactEnvelope
         public array $meta,
         public array $provenance,
         public bool $isError,
+        public ?array $app = null,
     ) {}
+
+    /** @param array<string,mixed> $app */
+    public function withApp(array $app): self
+    {
+        return new self(
+            llmText: $this->llmText,
+            structuredContent: $this->structuredContent,
+            attachments: $this->attachments,
+            meta: $this->meta,
+            provenance: $this->provenance,
+            isError: $this->isError,
+            app: $app,
+        );
+    }
 
     /** @return array<string,mixed> */
     public function toArray(): array
     {
-        return [
+        $payload = [
             'text' => $this->llmText,
             'structuredContent' => $this->structuredContent,
             'attachments' => $this->attachments,
@@ -32,5 +48,11 @@ final readonly class McpArtifactEnvelope
             'provenance' => $this->provenance,
             'isError' => $this->isError,
         ];
+
+        if ($this->app !== null) {
+            $payload['app'] = $this->app;
+        }
+
+        return $payload;
     }
 }

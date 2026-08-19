@@ -31,4 +31,9 @@ final readonly class McpInvocationOutcome
             'task' => $this->task,
         ], static fn (mixed $value): bool => $value !== null);
     }
+
+    public function requiresInteraction(): bool
+    {
+        return in_array($this->status, ['confirmation_required', 'input_required', 'task_accepted'], true);
+    }
 }

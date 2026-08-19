@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\AdminMcpConnectionsController;
+use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpAppController;
+use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpAppSandboxController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpInteractionController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpOAuthController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpTaskController;
@@ -13,6 +15,10 @@ use Padosoft\AskMyDocsConnectorMcp\Http\Middleware\EnsureMcpConnectorEnabled;
 Route::get((string) config('connector-mcp.oauth.client_metadata_path', '/.well-known/mcp-client.json'), [McpOAuthController::class, 'clientMetadata'])
     ->middleware(EnsureMcpConnectorEnabled::class)
     ->name('mcp-connector.client-metadata');
+
+Route::get((string) config('connector-mcp.apps.sandbox_path', '/mcp-apps/sandbox'), McpAppSandboxController::class)
+    ->middleware(EnsureMcpConnectorEnabled::class)
+    ->name('mcp-connector.apps.sandbox');
 
 Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config('connector-mcp.routes.middleware', ['api', 'auth'])))
     ->group(function (): void {
@@ -48,6 +54,8 @@ Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config
         });
 
         Route::post('api/conversations/mcp/interactions/{interaction}', [McpInteractionController::class, 'respond']);
+        Route::get('api/conversations/mcp/apps/{app}', [McpAppController::class, 'show']);
+        Route::post('api/conversations/mcp/apps/{app}/tools/call', [McpAppController::class, 'callTool']);
         Route::get('api/conversations/mcp/tasks/{task}', [McpTaskController::class, 'show']);
         Route::post('api/conversations/mcp/tasks/{task}/input', [McpTaskController::class, 'input']);
         Route::post('api/conversations/mcp/tasks/{task}/cancel', [McpTaskController::class, 'cancel']);

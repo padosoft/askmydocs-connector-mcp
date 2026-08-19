@@ -54,6 +54,24 @@ return [
         'minimum_poll_interval_ms' => 250,
         'poll_lock_seconds' => 30,
     ],
+    'apps' => [
+        'sandbox_origin' => env('MCP_CONNECTOR_APP_SANDBOX_ORIGIN'),
+        'sandbox_path' => env('MCP_CONNECTOR_APP_SANDBOX_PATH', '/mcp-apps/sandbox'),
+        'host_origins' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('MCP_CONNECTOR_APP_HOST_ORIGINS', (string) env('APP_URL', ''))),
+        ))),
+        'allow_insecure_local' => (bool) env('MCP_CONNECTOR_APP_ALLOW_INSECURE_LOCAL', false),
+        'allow_nested_frames' => (bool) env('MCP_CONNECTOR_APP_ALLOW_NESTED_FRAMES', false),
+        'allowed_permissions' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('MCP_CONNECTOR_APP_PERMISSIONS', '')),
+        ))),
+        'accepted_mime_types' => ['text/html;profile=mcp-app', 'text/html+skybridge'],
+        'max_html_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_HTML_BYTES', 1_000_000),
+        'max_tool_result_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_RESULT_BYTES', 524_288),
+        'retention_seconds' => (int) env('MCP_CONNECTOR_APP_RETENTION', 86_400),
+    ],
     'llm_text_limit' => 24_000,
 
     'routes' => [

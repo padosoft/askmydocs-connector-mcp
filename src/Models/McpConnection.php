@@ -127,4 +127,10 @@ final class McpConnection extends Model
     {
         return $this->hasMany(McpRemoteTask::class, 'mcp_connector_connection_id');
     }
+
+    /** @return HasMany<McpAppInstance, $this> */
+    public function appInstances(): HasMany
+    {
+        return $this->hasMany(McpAppInstance::class, 'mcp_connector_connection_id');
+    }
 }

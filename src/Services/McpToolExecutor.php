@@ -23,6 +23,7 @@ final readonly class McpToolExecutor
         private McpPendingInteractionService $pending,
         private McpRemoteTaskService $tasks,
         private McpArtifactEnvelopeFactory $artifacts,
+        private McpAppInstanceService $apps,
     ) {}
 
     /**
@@ -100,6 +101,10 @@ final readonly class McpToolExecutor
             }
 
             $artifact = $this->artifacts->make($result, $provenance, (string) $actor->getKey());
+            $app = $this->apps->capture($tool, $actor, $conversationId, $arguments, $result, $artifact);
+            if ($app !== null) {
+                $artifact = $artifact->withApp($app);
+            }
 
             if ($result->isInputRequired()) {
                 $interaction = $this->pending->create(
