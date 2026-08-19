@@ -11,9 +11,11 @@ use Illuminate\Support\Facades\Gate;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionResource;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpConnectionManager;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpDiscoveryService;
+use Padosoft\AskMyDocsConnectorMcp\Services\McpResourceCatalogService;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpToolGovernanceService;
 
 final class AdminMcpConnectionsController extends Controller
@@ -25,6 +27,7 @@ final class AdminMcpConnectionsController extends Controller
         private readonly McpConnectionManager $connections,
         private readonly McpDiscoveryService $discovery,
         private readonly McpToolGovernanceService $governance,
+        private readonly McpResourceCatalogService $resources,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -32,7 +35,7 @@ final class AdminMcpConnectionsController extends Controller
         $this->authorizeAdmin();
 
         return response()->json(McpConnection::query()
-            ->with(['server', 'tools'])
+            ->with(['server', 'tools', 'resources'])
             ->where('tenant_id', $this->tenantContext->current())
             ->where('mode', 'shared')
             ->get());
@@ -104,6 +107,18 @@ final class AdminMcpConnectionsController extends Controller
         return response()->json($this->governance->setEnabled($toolModel, $request->boolean('enabled')));
     }
 
+    public function setResource(Request $request, string $connection, int $resource): JsonResponse
+    {
+        $this->authorizeAdmin();
+        $connectionModel = $this->shared($connection);
+        $resourceModel = McpConnectionResource::query()
+            ->where('tenant_id', $this->tenantContext->current())
+            ->where('mcp_connector_connection_id', $connectionModel->getKey())
+            ->findOrFail($resource);
+
+        return response()->json($this->resources->setEnabled($resourceModel, $request->boolean('enabled')));
+    }
+
     private function shared(string $publicId): McpConnection
     {
         return McpConnection::query()
@@ -127,12 +142,14 @@ final class AdminMcpConnectionsController extends Controller
         try {
             return response()->json($this->discovery->discover($connection), 201);
         } catch (\Throwable) {
-            $connection->refresh()->load(['server', 'tools']);
+            $connection->refresh()->load(['server', 'tools', 'resources']);
 
             return response()->json([
                 'connection' => $connection,
                 'tools' => [],
+                'resources' => [],
                 'catalog_error' => null,
+                'resource_catalog_error' => null,
                 'authorization_required' => data_get($connection->error_json, 'authorization_required') === true,
             ], 201);
         }

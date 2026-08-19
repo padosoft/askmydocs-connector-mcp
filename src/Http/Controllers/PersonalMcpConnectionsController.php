@@ -31,7 +31,7 @@ final class PersonalMcpConnectionsController extends Controller
     {
         $actor = $this->actor($request);
 
-        return response()->json(McpConnection::query()->with(['server', 'tools'])
+        return response()->json(McpConnection::query()->with(['server', 'tools', 'resources'])
             ->where('tenant_id', $this->tenantContext->current())
             ->where('mode', 'personal')
             ->where('owner_type', $actor->getMorphClass())
@@ -127,12 +127,14 @@ final class PersonalMcpConnectionsController extends Controller
         try {
             return response()->json($this->discovery->discover($connection), 201);
         } catch (\Throwable) {
-            $connection->refresh()->load(['server', 'tools']);
+            $connection->refresh()->load(['server', 'tools', 'resources']);
 
             return response()->json([
                 'connection' => $connection,
                 'tools' => [],
+                'resources' => [],
                 'catalog_error' => null,
+                'resource_catalog_error' => null,
                 'authorization_required' => data_get($connection->error_json, 'authorization_required') === true,
             ], 201);
         }

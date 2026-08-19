@@ -105,4 +105,10 @@ final class McpConnection extends Model
     {
         return $this->hasMany(McpConnectionTool::class, 'mcp_connector_connection_id');
     }
+
+    /** @return HasMany<McpConnectionResource, $this> */
+    public function resources(): HasMany
+    {
+        return $this->hasMany(McpConnectionResource::class, 'mcp_connector_connection_id');
+    }
 }

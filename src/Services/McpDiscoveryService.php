@@ -8,6 +8,7 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionResource;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
 use Padosoft\AskMyDocsMcpPack\Contracts\McpProtocolAwareTransportContract;
@@ -22,9 +23,10 @@ final readonly class McpDiscoveryService
         private McpOAuthService $oauth,
         private McpLocalToolName $names,
         private McpToolPolicy $policy,
+        private McpResourceCatalogService $resources,
     ) {}
 
-    /** @return array{connection:McpConnection,tools:list<McpConnectionTool>,catalog_error:?string} */
+    /** @return array{connection:McpConnection,tools:list<McpConnectionTool>,resources:list<McpConnectionResource>,catalog_error:?string,resource_catalog_error:?string} */
     public function discover(McpConnection $connection): array
     {
         $this->assertTenant($connection);
@@ -56,6 +58,7 @@ final readonly class McpDiscoveryService
             'last_discovered_at' => now(),
         ])->save();
 
+        $catalogErrors = [];
         try {
             $remoteTools = $this->drainTools($client);
             $tools = $this->reconcile($connection, $remoteTools);
@@ -64,15 +67,41 @@ final readonly class McpDiscoveryService
             // Protocol/auth is healthy: an empty or failed catalog must not turn
             // the connection itself into a false-negative.
             $catalogError = $e->getMessage();
-            $connection->forceFill(['error_json' => [
-                'phase' => 'tools_list',
-                'class' => $e::class,
-                'message' => $catalogError,
-            ]])->save();
+            $catalogErrors['tools'] = ['class' => $e::class, 'message' => $catalogError];
             $tools = [];
         }
 
-        return ['connection' => $connection->refresh(), 'tools' => $tools, 'catalog_error' => $catalogError];
+        try {
+            if (array_key_exists('resources', $negotiated->capabilities)) {
+                $resources = $this->resources->discover($connection, $client);
+            } else {
+                $resources = $this->resources->markUnsupported($connection);
+            }
+            $resourceCatalogError = null;
+        } catch (\Throwable $e) {
+            $resourceCatalogError = $e->getMessage();
+            $catalogErrors['resources'] = ['class' => $e::class, 'message' => $resourceCatalogError];
+            $resources = [];
+        }
+
+        if ($catalogErrors !== []) {
+            $phase = count($catalogErrors) === 1
+                ? (isset($catalogErrors['tools']) ? 'tools_list' : 'resources_list')
+                : 'catalog_discovery';
+            $connection->forceFill(['error_json' => [
+                'phase' => $phase,
+                'catalog_errors' => $catalogErrors,
+                'message' => $catalogError ?? $resourceCatalogError,
+            ]])->save();
+        }
+
+        return [
+            'connection' => $connection->refresh(),
+            'tools' => $tools,
+            'resources' => $resources,
+            'catalog_error' => $catalogError,
+            'resource_catalog_error' => $resourceCatalogError,
+        ];
     }
 
     /** @return list<array<string,mixed>> */
