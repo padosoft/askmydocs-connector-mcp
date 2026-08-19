@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Route;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\AdminMcpConnectionsController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpInteractionController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpOAuthController;
+use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\McpTaskController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\PersonalMcpConnectionsController;
 use Padosoft\AskMyDocsConnectorMcp\Http\Middleware\EnsureMcpConnectorEnabled;
 
@@ -47,4 +48,7 @@ Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config
         });
 
         Route::post('api/conversations/mcp/interactions/{interaction}', [McpInteractionController::class, 'respond']);
+        Route::get('api/conversations/mcp/tasks/{task}', [McpTaskController::class, 'show']);
+        Route::post('api/conversations/mcp/tasks/{task}/input', [McpTaskController::class, 'input']);
+        Route::post('api/conversations/mcp/tasks/{task}/cancel', [McpTaskController::class, 'cancel']);
     });

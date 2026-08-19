@@ -25,6 +25,8 @@ final class PackageBootTest extends TestCase
             'mcp_connector_oauth_clients',
             'mcp_connector_oauth_attempts',
             'mcp_connector_pending_interactions',
+            'mcp_connector_resources',
+            'mcp_connector_remote_tasks',
         ] as $table) {
             $this->assertTrue(Schema::hasTable($table), "Missing table [{$table}].");
         }

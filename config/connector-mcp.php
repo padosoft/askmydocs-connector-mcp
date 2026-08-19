@@ -48,6 +48,12 @@ return [
     ],
 
     'pending_interaction_ttl_seconds' => 900,
+    'tasks' => [
+        'retention_seconds' => (int) env('MCP_CONNECTOR_TASK_RETENTION', 604_800),
+        'default_poll_interval_ms' => (int) env('MCP_CONNECTOR_TASK_POLL_INTERVAL', 1000),
+        'minimum_poll_interval_ms' => 250,
+        'poll_lock_seconds' => 30,
+    ],
     'llm_text_limit' => 24_000,
 
     'routes' => [

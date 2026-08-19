@@ -6,12 +6,17 @@ namespace Padosoft\AskMyDocsConnectorMcp\Support;
 
 final readonly class McpInvocationOutcome
 {
-    /** @param array<string,mixed>|null $prompt */
+    /**
+     * @param  array<string,mixed>|null  $prompt
+     * @param  array<string,mixed>|null  $task
+     */
     public function __construct(
         public string $status,
         public ?McpArtifactEnvelope $artifact = null,
         public ?string $pendingInteractionId = null,
         public ?array $prompt = null,
+        public ?string $taskId = null,
+        public ?array $task = null,
     ) {}
 
     /** @return array<string,mixed> */
@@ -22,6 +27,8 @@ final readonly class McpInvocationOutcome
             'artifact' => $this->artifact?->toArray(),
             'pending_interaction_id' => $this->pendingInteractionId,
             'prompt' => $this->prompt,
+            'task_id' => $this->taskId,
+            'task' => $this->task,
         ], static fn (mixed $value): bool => $value !== null);
     }
 }

@@ -21,6 +21,7 @@ final readonly class McpToolExecutor
         private McpEndpointSecurityGuard $guard,
         private McpOAuthService $oauth,
         private McpPendingInteractionService $pending,
+        private McpRemoteTaskService $tasks,
         private McpArtifactEnvelopeFactory $artifacts,
     ) {}
 
@@ -71,6 +72,33 @@ final readonly class McpToolExecutor
             $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
             $provenance = $baseProvenance + ['latency_ms' => $latencyMs];
+
+            if ($result->isTask()) {
+                $task = $this->tasks->capture(
+                    $tool,
+                    $actor,
+                    $conversationId,
+                    $invocationId,
+                    $result,
+                    $provenance,
+                );
+                $taskPayload = $task->toPublicArray();
+                $outcome = new McpInvocationOutcome(
+                    status: 'task_accepted',
+                    taskId: $task->public_id,
+                    task: $taskPayload,
+                    prompt: [
+                        'message' => $task->status === 'input_required'
+                            ? 'The MCP task requires additional input.'
+                            : 'The MCP task is running.',
+                        'inputRequests' => $task->input_requests,
+                    ],
+                );
+                $this->emit(new McpToolInvocationFinished($tool, $arguments, $actor, $conversationId, $outcome, $provenance, $latencyMs));
+
+                return $outcome;
+            }
+
             $artifact = $this->artifacts->make($result, $provenance, (string) $actor->getKey());
 
             if ($result->isInputRequired()) {
@@ -93,7 +121,7 @@ final readonly class McpToolExecutor
                 return $outcome;
             }
 
-            $outcome = new McpInvocationOutcome($result->isError ? 'error' : ($result->isTask() ? 'task_accepted' : 'completed'), $artifact);
+            $outcome = new McpInvocationOutcome($result->isError ? 'error' : 'completed', $artifact);
             $this->emit(new McpToolInvocationFinished($tool, $arguments, $actor, $conversationId, $outcome, $provenance, $latencyMs));
 
             return $outcome;
