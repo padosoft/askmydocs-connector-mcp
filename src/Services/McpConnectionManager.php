@@ -8,7 +8,9 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
+use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\McpConnector;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
 
@@ -109,6 +111,18 @@ final readonly class McpConnectionManager
                 'project_key' => $attributes['project_key'] ?? null,
                 'status' => McpConnection::STATUS_PENDING,
             ]);
+            if ($mode === 'shared') {
+                $installation = ConnectorInstallation::query()->create([
+                    'tenant_id' => $tenant,
+                    'connector_name' => McpConnector::KEY,
+                    'label' => $this->installationLabel($tenant, (string) $connection->label, $connection->public_id),
+                    'project_key' => $connection->project_key,
+                    'config_json' => ['mcp_connection_public_id' => $connection->public_id],
+                    'status' => ConnectorInstallation::STATUS_PENDING,
+                    'created_by' => $this->numericActorId($createdBy),
+                ]);
+                $connection->forceFill(['connector_installation_id' => $installation->getKey()])->save();
+            }
             if ($authMode === 'bearer') {
                 $this->vault->putBearer($connection, (string) $attributes['bearer']);
             }
@@ -122,6 +136,7 @@ final readonly class McpConnectionManager
         $this->assertTenant($connection);
         $this->vault->clear($connection);
         $connection->forceFill(['status' => McpConnection::STATUS_DISABLED])->save();
+        $connection->installation?->forceFill(['status' => ConnectorInstallation::STATUS_DISABLED])->save();
     }
 
     /** @param array<string,mixed> $attributes */
@@ -185,6 +200,22 @@ final readonly class McpConnectionManager
             if ($connectionChanges !== []) {
                 $connection->forceFill($connectionChanges)->save();
             }
+            if ($connection->installation !== null) {
+                $installationChanges = [
+                    'label' => $this->installationLabel(
+                        (string) $connection->tenant_id,
+                        (string) $connection->label,
+                        (string) $connection->public_id,
+                        (int) $connection->installation->getKey(),
+                    ),
+                    'project_key' => $connection->project_key,
+                ];
+                if ($requiresDiscovery) {
+                    $installationChanges['status'] = ConnectorInstallation::STATUS_PENDING;
+                    $installationChanges['error_json'] = null;
+                }
+                $connection->installation->forceFill($installationChanges)->save();
+            }
 
             if (array_key_exists('bearer', $attributes)) {
                 $bearer = is_string($attributes['bearer']) ? trim($attributes['bearer']) : '';
@@ -206,7 +237,9 @@ final readonly class McpConnectionManager
         $this->assertTenant($connection);
         DB::transaction(function () use ($connection): void {
             $server = $connection->server()->first();
+            $installation = $connection->installation()->first();
             $connection->delete();
+            $installation?->delete();
             if ($server !== null && ! $server->connections()->exists()) {
                 $server->delete();
             }
@@ -228,5 +261,29 @@ final readonly class McpConnectionManager
         if ((string) $connection->tenant_id !== $this->tenantContext->current()) {
             throw new AuthorizationException('MCP connection is outside the active tenant.');
         }
+    }
+
+    private function installationLabel(string $tenant, string $label, string $publicId, ?int $ignoreId = null): string
+    {
+        $label = trim($label) !== '' ? trim($label) : 'MCP';
+        $label = mb_substr($label, 0, 64);
+        $exists = ConnectorInstallation::query()
+            ->where('tenant_id', $tenant)
+            ->where('connector_name', McpConnector::KEY)
+            ->where('label', $label)
+            ->when($ignoreId !== null, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->exists();
+        if (! $exists) {
+            return $label;
+        }
+
+        $suffix = '-'.strtolower(substr($publicId, -6));
+
+        return mb_substr($label, 0, 64 - strlen($suffix)).$suffix;
+    }
+
+    private function numericActorId(string $actorId): ?int
+    {
+        return preg_match('/^[1-9][0-9]*$/', $actorId) === 1 ? (int) $actorId : null;
     }
 }

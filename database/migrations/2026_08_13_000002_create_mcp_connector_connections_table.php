@@ -17,6 +17,11 @@ return new class extends Migration
             $table->foreignId('mcp_connector_server_id')
                 ->constrained('mcp_connector_servers')
                 ->cascadeOnDelete();
+            $table->foreignId('connector_installation_id')
+                ->nullable()
+                ->unique()
+                ->constrained('connector_installations')
+                ->nullOnDelete();
             $table->string('mode', 16);
             $table->nullableMorphs('owner', 'idx_mcp_connector_connections_owner');
             $table->string('label', 100)->default('default');

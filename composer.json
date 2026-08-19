@@ -52,6 +52,11 @@
             "providers": [
                 "Padosoft\\AskMyDocsConnectorMcp\\McpConnectorServiceProvider"
             ]
+        },
+        "askmydocs": {
+            "connectors": [
+                "Padosoft\\AskMyDocsConnectorMcp\\McpConnector"
+            ]
         }
     },
     "repositories": [

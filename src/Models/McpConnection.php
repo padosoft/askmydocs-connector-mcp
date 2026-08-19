@@ -11,11 +11,13 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
+use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 
 /**
  * @property string $public_id
  * @property string $tenant_id
  * @property int $mcp_connector_server_id
+ * @property int|null $connector_installation_id
  * @property string $mode
  * @property string|null $owner_type
  * @property string|null $owner_id
@@ -26,6 +28,7 @@ use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
  * @property array<string,mixed>|null $granted_scopes_json
  * @property array<string,mixed>|null $account_metadata_json
  * @property McpServerDefinition $server
+ * @property ConnectorInstallation|null $installation
  */
 final class McpConnection extends Model
 {
@@ -47,6 +50,7 @@ final class McpConnection extends Model
         'public_id',
         'tenant_id',
         'mcp_connector_server_id',
+        'connector_installation_id',
         'mode',
         'owner_type',
         'owner_id',
@@ -86,6 +90,12 @@ final class McpConnection extends Model
     public function server(): BelongsTo
     {
         return $this->belongsTo(McpServerDefinition::class, 'mcp_connector_server_id');
+    }
+
+    /** @return BelongsTo<ConnectorInstallation, $this> */
+    public function installation(): BelongsTo
+    {
+        return $this->belongsTo(ConnectorInstallation::class, 'connector_installation_id');
     }
 
     /** @return MorphTo<Model, $this> */

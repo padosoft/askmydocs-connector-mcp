@@ -27,7 +27,9 @@ Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config
             Route::post('/{connection}/disconnect', [AdminMcpConnectionsController::class, 'disconnect']);
             Route::delete('/{connection}', [AdminMcpConnectionsController::class, 'destroy']);
             Route::put('/{connection}/tools/{tool}', [AdminMcpConnectionsController::class, 'setTool']);
-            Route::put('/{connection}/resources/{resource}', [AdminMcpConnectionsController::class, 'setResource']);
+            Route::post('/{connection}/resources/sync', [AdminMcpConnectionsController::class, 'syncResources']);
+            Route::put('/{connection}/resources/{resource}', [AdminMcpConnectionsController::class, 'setResource'])
+                ->whereNumber('resource');
             Route::post('/{connection}/oauth', [McpOAuthController::class, 'begin']);
         });
 

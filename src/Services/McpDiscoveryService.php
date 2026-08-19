@@ -6,6 +6,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Services;
 
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
+use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionResource;
@@ -56,6 +57,10 @@ final readonly class McpDiscoveryService
             'status' => McpConnection::STATUS_ACTIVE,
             'error_json' => null,
             'last_discovered_at' => now(),
+        ])->save();
+        $connection->installation?->forceFill([
+            'status' => ConnectorInstallation::STATUS_ACTIVE,
+            'error_json' => null,
         ])->save();
 
         $catalogErrors = [];
@@ -206,6 +211,10 @@ final readonly class McpDiscoveryService
             }
         }
         $connection->forceFill(['status' => McpConnection::STATUS_ERRORED, 'error_json' => $error])->save();
+        $connection->installation?->forceFill([
+            'status' => ConnectorInstallation::STATUS_ERRORED,
+            'error_json' => $error,
+        ])->save();
         $connection->server->forceFill(['status' => McpServerDefinition::STATUS_ERRORED, 'error_json' => $error])->save();
     }
 

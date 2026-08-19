@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Gate;
+use Padosoft\AskMyDocsConnectorBase\ConnectorSyncJob;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
@@ -35,7 +36,7 @@ final class AdminMcpConnectionsController extends Controller
         $this->authorizeAdmin();
 
         return response()->json(McpConnection::query()
-            ->with(['server', 'tools', 'resources'])
+            ->with(['server', 'tools', 'resources', 'installation'])
             ->where('tenant_id', $this->tenantContext->current())
             ->where('mode', 'shared')
             ->get());
@@ -117,6 +118,18 @@ final class AdminMcpConnectionsController extends Controller
             ->findOrFail($resource);
 
         return response()->json($this->resources->setEnabled($resourceModel, $request->boolean('enabled')));
+    }
+
+    public function syncResources(string $connection): JsonResponse
+    {
+        $this->authorizeAdmin();
+        $model = $this->shared($connection);
+        if ($model->connector_installation_id === null) {
+            return response()->json(['message' => 'MCP resource ingest is not bound to the scheduler.'], 409);
+        }
+        ConnectorSyncJob::dispatch($model->connector_installation_id, (string) $model->tenant_id);
+
+        return response()->json(['status' => 'queued'], 202);
     }
 
     private function shared(string $publicId): McpConnection
