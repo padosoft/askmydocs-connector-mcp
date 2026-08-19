@@ -25,6 +25,12 @@ return [
         'internal_endpoint_allowlist' => [],
     ],
 
+    'ingest' => [
+        'max_resources_per_sync' => (int) env('MCP_CONNECTOR_MAX_RESOURCES_PER_SYNC', 500),
+        'max_resource_bytes' => (int) env('MCP_CONNECTOR_MAX_RESOURCE_BYTES', 10_000_000),
+        'max_sync_bytes' => (int) env('MCP_CONNECTOR_MAX_SYNC_BYTES', 100_000_000),
+    ],
+
     'oauth' => [
         'callback_path' => env('MCP_CONNECTOR_OAUTH_CALLBACK_PATH', '/api/connectors/mcp/oauth/callback'),
         'state_ttl_seconds' => (int) env('MCP_CONNECTOR_OAUTH_STATE_TTL', 600),
