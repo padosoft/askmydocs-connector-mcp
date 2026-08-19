@@ -112,16 +112,7 @@ final readonly class McpConnectionManager
                 'status' => McpConnection::STATUS_PENDING,
             ]);
             if ($mode === 'shared') {
-                $installation = ConnectorInstallation::query()->create([
-                    'tenant_id' => $tenant,
-                    'connector_name' => McpConnector::KEY,
-                    'label' => $this->installationLabel($tenant, (string) $connection->label, $connection->public_id),
-                    'project_key' => $connection->project_key,
-                    'config_json' => ['mcp_connection_public_id' => $connection->public_id],
-                    'status' => ConnectorInstallation::STATUS_PENDING,
-                    'created_by' => $this->numericActorId($createdBy),
-                ]);
-                $connection->forceFill(['connector_installation_id' => $installation->getKey()])->save();
+                $this->ensureIngestInstallation($connection, $createdBy);
             }
             if ($authMode === 'bearer') {
                 $this->vault->putBearer($connection, (string) $attributes['bearer']);
@@ -256,6 +247,41 @@ final readonly class McpConnectionManager
         }
     }
 
+    public function ensureIngestInstallation(McpConnection $connection, string $createdBy): ?ConnectorInstallation
+    {
+        $this->assertTenant($connection);
+        if ($connection->isPersonal()) {
+            return null;
+        }
+        if ($connection->connector_installation_id !== null) {
+            $existing = ConnectorInstallation::query()
+                ->where('tenant_id', $connection->tenant_id)
+                ->where('connector_name', McpConnector::KEY)
+                ->find($connection->connector_installation_id);
+            if ($existing !== null) {
+                return $existing;
+            }
+        }
+
+        $installation = ConnectorInstallation::query()->create([
+            'tenant_id' => $connection->tenant_id,
+            'connector_name' => McpConnector::KEY,
+            'label' => $this->installationLabel(
+                (string) $connection->tenant_id,
+                (string) $connection->label,
+                (string) $connection->public_id,
+            ),
+            'project_key' => $connection->project_key,
+            'config_json' => ['mcp_connection_public_id' => $connection->public_id],
+            'status' => $this->installationStatus((string) $connection->status),
+            'error_json' => $connection->error_json,
+            'created_by' => $this->numericActorId($createdBy),
+        ]);
+        $connection->forceFill(['connector_installation_id' => $installation->getKey()])->save();
+
+        return $installation;
+    }
+
     private function assertTenant(McpConnection $connection): void
     {
         if ((string) $connection->tenant_id !== $this->tenantContext->current()) {
@@ -285,5 +311,15 @@ final readonly class McpConnectionManager
     private function numericActorId(string $actorId): ?int
     {
         return preg_match('/^[1-9][0-9]*$/', $actorId) === 1 ? (int) $actorId : null;
+    }
+
+    private function installationStatus(string $connectionStatus): string
+    {
+        return match ($connectionStatus) {
+            McpConnection::STATUS_ACTIVE => ConnectorInstallation::STATUS_ACTIVE,
+            McpConnection::STATUS_DISABLED => ConnectorInstallation::STATUS_DISABLED,
+            McpConnection::STATUS_ERRORED, McpConnection::STATUS_REAUTHORIZATION_REQUIRED => ConnectorInstallation::STATUS_ERRORED,
+            default => ConnectorInstallation::STATUS_PENDING,
+        };
     }
 }

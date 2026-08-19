@@ -7,6 +7,8 @@ namespace Padosoft\AskMyDocsConnectorMcp\Tests\Feature;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\McpConnector;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpConnectionManager;
 use Padosoft\AskMyDocsConnectorMcp\Tests\Support\TestUser;
 use Padosoft\AskMyDocsConnectorMcp\Tests\TestCase;
@@ -71,5 +73,29 @@ final class McpConnectorLifecycleTest extends TestCase
         $this->assertSame('Knowledge', $labels[0]);
         $this->assertSame('Knowledge-'.strtolower(substr($second->public_id, -6)), $labels[1]);
         $this->assertNotSame($first->connector_installation_id, $second->connector_installation_id);
+    }
+
+    public function test_existing_shared_connection_can_be_projected_idempotently(): void
+    {
+        app(TenantContext::class)->set('acme');
+        $server = McpServerDefinition::query()->create([
+            'name' => 'Imported',
+            'endpoint' => 'https://mcp.example.test/imported',
+        ]);
+        $connection = McpConnection::query()->create([
+            'mcp_connector_server_id' => $server->getKey(),
+            'mode' => 'shared',
+            'label' => 'Imported',
+            'status' => McpConnection::STATUS_ACTIVE,
+        ]);
+
+        $manager = app(McpConnectionManager::class);
+        $first = $manager->ensureIngestInstallation($connection, '42');
+        $second = $manager->ensureIngestInstallation($connection->refresh(), '42');
+
+        $this->assertNotNull($first);
+        $this->assertSame($first->getKey(), $second?->getKey());
+        $this->assertSame(ConnectorInstallation::STATUS_ACTIVE, $first->status);
+        $this->assertDatabaseCount('connector_installations', 1);
     }
 }
