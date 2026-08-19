@@ -149,12 +149,17 @@ final class McpAppLifecycleTest extends TestCase
 
     public function test_sandbox_proxy_is_public_static_and_deny_by_default(): void
     {
+        config()->set('connector-mcp.apps.allowed_permissions', ['camera', 'clipboardWrite']);
         $response = $this->get('/mcp-apps/sandbox');
 
         $response->assertOk();
         $this->assertSame('1', $response->headers->get('X-AskMyDocs-MCP-App-Sandbox'));
         $this->assertStringContainsString("default-src 'none'", (string) $response->headers->get('Content-Security-Policy'));
         $this->assertStringContainsString('frame-ancestors https://askmydocs.example.test', (string) $response->headers->get('Content-Security-Policy'));
+        $this->assertSame(
+            'camera=(*), microphone=(), geolocation=(), clipboard-write=(*)',
+            $response->headers->get('Permissions-Policy'),
+        );
         $response->assertSee('ui/notifications/sandbox-proxy-ready', false);
         $response->assertSee("setAttribute('sandbox', 'allow-scripts')", false);
     }

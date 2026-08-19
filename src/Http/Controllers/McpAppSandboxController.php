@@ -30,7 +30,12 @@ final class McpAppSandboxController extends Controller
                 "form-action 'none'",
                 'frame-ancestors '.$ancestors,
             ]),
-            'Permissions-Policy' => 'camera=(), microphone=(), geolocation=(), clipboard-write=()',
+            // The resource-specific allow list is still applied to both the
+            // outer host iframe and the inner sandbox iframe. This response
+            // header must not pre-emptively deny permissions that an admin
+            // explicitly enabled, otherwise browsers block them before the
+            // iframe `allow` attributes can narrow access per app.
+            'Permissions-Policy' => $this->permissionsPolicy(),
             'Referrer-Policy' => 'no-referrer',
             'Cache-Control' => 'no-store, private',
             'X-Content-Type-Options' => 'nosniff',
@@ -56,5 +61,22 @@ final class McpAppSandboxController extends Controller
         }
 
         return $origins === [] ? "'none'" : implode(' ', array_unique($origins));
+    }
+
+    private function permissionsPolicy(): string
+    {
+        $allowed = array_flip((array) config('connector-mcp.apps.allowed_permissions', []));
+        $features = [
+            'camera' => 'camera',
+            'microphone' => 'microphone',
+            'geolocation' => 'geolocation',
+            'clipboard-write' => 'clipboardWrite',
+        ];
+
+        return implode(', ', array_map(
+            static fn (string $feature, string $configKey): string => $feature.'='.(isset($allowed[$configKey]) ? '(*)' : '()'),
+            array_keys($features),
+            array_values($features),
+        ));
     }
 }
