@@ -55,6 +55,7 @@ return [
         'poll_lock_seconds' => 30,
     ],
     'apps' => [
+        'advanced_enabled' => (bool) env('MCP_CONNECTOR_APP_ADVANCED_ENABLED', false),
         'sandbox_origin' => env('MCP_CONNECTOR_APP_SANDBOX_ORIGIN'),
         'sandbox_path' => env('MCP_CONNECTOR_APP_SANDBOX_PATH', '/mcp-apps/sandbox'),
         'host_origins' => array_values(array_filter(array_map(
@@ -70,6 +71,9 @@ return [
         'accepted_mime_types' => ['text/html;profile=mcp-app', 'text/html+skybridge'],
         'max_html_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_HTML_BYTES', 1_000_000),
         'max_tool_result_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_RESULT_BYTES', 524_288),
+        'max_model_context_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_CONTEXT_BYTES', 65_536),
+        'max_download_items' => (int) env('MCP_CONNECTOR_APP_MAX_DOWNLOAD_ITEMS', 5),
+        'max_download_bytes' => (int) env('MCP_CONNECTOR_APP_MAX_DOWNLOAD_BYTES', 10_000_000),
         'retention_seconds' => (int) env('MCP_CONNECTOR_APP_RETENTION', 86_400),
     ],
     'llm_text_limit' => 24_000,

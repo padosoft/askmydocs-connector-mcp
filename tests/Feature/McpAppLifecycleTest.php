@@ -6,9 +6,11 @@ namespace Padosoft\AskMyDocsConnectorMcp\Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpAppInstance;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
+use Padosoft\AskMyDocsConnectorMcp\Services\McpAppInstanceService;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpToolExecutor;
 use Padosoft\AskMyDocsConnectorMcp\Tests\Support\TestUser;
 use Padosoft\AskMyDocsConnectorMcp\Tests\TestCase;
@@ -164,6 +166,84 @@ final class McpAppLifecycleTest extends TestCase
         $response->assertSee("setAttribute('sandbox', 'allow-scripts')", false);
     }
 
+    public function test_advanced_model_context_is_opt_in_encrypted_and_scoped_to_the_app(): void
+    {
+        config()->set('connector-mcp.apps.advanced_enabled', true);
+        app(TenantContext::class)->set('acme');
+        $actor = TestUser::query()->create(['name' => 'Marco']);
+        $tool = $this->tool();
+        McpClient::useTransportResolver(static fn () => new McpAppTransport);
+        $outcome = app(McpToolExecutor::class)->invoke($tool->local_name, [], $actor, 'conversation-context');
+        $appId = (string) data_get($outcome->artifact?->app, 'id');
+
+        $this->actingAs($actor)->getJson(
+            '/api/conversations/mcp/apps/'.$appId.'?conversation_id=conversation-context',
+        )->assertOk()->assertJsonPath('advanced_enabled', true);
+
+        $this->actingAs($actor)->putJson('/api/conversations/mcp/apps/'.$appId.'/model-context', [
+            'conversation_id' => 'conversation-context',
+            'content' => [['type' => 'text', 'text' => 'The user selected region Europe.']],
+            'structuredContent' => ['region' => 'EU'],
+        ])->assertOk();
+
+        $raw = (string) DB::table('mcp_connector_app_instances')->where('public_id', $appId)->value('model_context');
+        $this->assertStringNotContainsString('selected region Europe', $raw);
+        $instance = McpAppInstance::query()->where('public_id', $appId)->firstOrFail();
+        $prompt = app(McpAppInstanceService::class)->promptContext($instance);
+        $this->assertStringContainsString('selected region Europe', (string) $prompt);
+        $this->assertStringContainsString('"region":"EU"', (string) $prompt);
+    }
+
+    public function test_advanced_downloads_materialize_embedded_and_linked_resources_as_signed_artifacts(): void
+    {
+        config()->set('connector-mcp.apps.advanced_enabled', true);
+        app(TenantContext::class)->set('acme');
+        $actor = TestUser::query()->create(['name' => 'Marco']);
+        $tool = $this->tool();
+        McpClient::useTransportResolver(static fn () => new McpAppTransport);
+        $outcome = app(McpToolExecutor::class)->invoke($tool->local_name, [], $actor, 'conversation-download');
+        $appId = (string) data_get($outcome->artifact?->app, 'id');
+
+        $response = $this->actingAs($actor)->postJson('/api/conversations/mcp/apps/'.$appId.'/downloads', [
+            'conversation_id' => 'conversation-download',
+            'contents' => [
+                [
+                    'type' => 'resource',
+                    'resource' => [
+                        'uri' => 'file://summary.txt',
+                        'mimeType' => 'text/plain',
+                        'text' => 'Private generated summary.',
+                    ],
+                ],
+                [
+                    'type' => 'resource_link',
+                    'uri' => 'docs://exports/report.csv',
+                    'name' => 'report.csv',
+                ],
+            ],
+        ])->assertOk();
+
+        $this->assertCount(2, $response->json('downloads'));
+        $this->assertStringContainsString('signature=', (string) $response->json('downloads.0.url'));
+        $this->assertSame('report.csv', $response->json('downloads.1.name'));
+        $this->assertSame(2, DB::table('mcp_artifacts')->count());
+    }
+
+    public function test_advanced_endpoints_are_hidden_while_feature_is_disabled(): void
+    {
+        app(TenantContext::class)->set('acme');
+        $actor = TestUser::query()->create(['name' => 'Marco']);
+        $tool = $this->tool();
+        McpClient::useTransportResolver(static fn () => new McpAppTransport);
+        $outcome = app(McpToolExecutor::class)->invoke($tool->local_name, [], $actor, 'conversation-disabled');
+        $appId = (string) data_get($outcome->artifact?->app, 'id');
+
+        $this->actingAs($actor)->putJson('/api/conversations/mcp/apps/'.$appId.'/model-context', [
+            'conversation_id' => 'conversation-disabled',
+            'content' => [],
+        ])->assertNotFound();
+    }
+
     private function tool(): McpConnectionTool
     {
         $server = McpServerDefinition::query()->create([
@@ -211,6 +291,14 @@ final class McpAppTransport implements McpTransportContract
             ]);
         }
         if ($request->method === 'resources/read') {
+            if (($request->params['uri'] ?? null) === 'docs://exports/report.csv') {
+                return JsonRpcMessage::response($request->id, ['contents' => [[
+                    'uri' => 'docs://exports/report.csv',
+                    'mimeType' => 'text/csv',
+                    'text' => "id,total\n1,42\n",
+                ]]]);
+            }
+
             return JsonRpcMessage::response($request->id, ['contents' => [[
                 'uri' => 'ui://reports/result.html',
                 'mimeType' => 'text/html;profile=mcp-app',

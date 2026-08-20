@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Http\Controllers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Validation\ValidationException;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpAppInstanceService;
@@ -64,6 +65,48 @@ final class McpAppController extends Controller
             $payload,
             $outcome->requiresInteraction() ? 202 : 200,
         );
+    }
+
+    public function updateModelContext(Request $request, string $app): JsonResponse
+    {
+        $this->authorizeAdvanced();
+        $data = $request->validate([
+            'conversation_id' => ['required', 'string', 'max:191'],
+            'content' => ['sometimes', 'array', 'max:32'],
+            'structuredContent' => ['sometimes', 'array'],
+        ]);
+        $instance = $this->apps->authorized($app, $this->actor($request), $data['conversation_id']);
+        try {
+            $this->apps->replaceModelContext($instance, $data);
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['context' => $e->getMessage()]);
+        }
+
+        return response()->json((object) []);
+    }
+
+    public function download(Request $request, string $app): JsonResponse
+    {
+        $this->authorizeAdvanced();
+        $data = $request->validate([
+            'conversation_id' => ['required', 'string', 'max:191'],
+            'contents' => ['required', 'array', 'min:1', 'max:'.max(1, (int) config('connector-mcp.apps.max_download_items', 5))],
+            'contents.*' => ['required', 'array'],
+        ]);
+        $actor = $this->actor($request);
+        $instance = $this->apps->authorized($app, $actor, $data['conversation_id']);
+        try {
+            $downloads = $this->apps->prepareDownloads($instance, $actor, $data['contents']);
+        } catch (\InvalidArgumentException $e) {
+            throw ValidationException::withMessages(['contents' => $e->getMessage()]);
+        }
+
+        return response()->json(['downloads' => $downloads]);
+    }
+
+    private function authorizeAdvanced(): void
+    {
+        abort_unless($this->runtime->active() && $this->apps->advancedEnabled(), 404);
     }
 
     /** @return array<string,mixed> */

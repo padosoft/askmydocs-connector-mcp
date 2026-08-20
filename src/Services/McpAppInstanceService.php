@@ -12,6 +12,8 @@ use Padosoft\AskMyDocsConnectorMcp\Models\McpAppInstance;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Support\McpArtifactEnvelope;
+use Padosoft\AskMyDocsMcpPack\Artifacts\Artifact;
+use Padosoft\AskMyDocsMcpPack\Contracts\V2\ArtifactManagerContract;
 use Padosoft\AskMyDocsMcpPack\Services\McpClient;
 use Padosoft\AskMyDocsMcpPack\Support\McpToolResult;
 
@@ -22,6 +24,7 @@ final readonly class McpAppInstanceService
         private McpCredentialVault $vault,
         private McpEndpointSecurityGuard $guard,
         private McpOAuthService $oauth,
+        private ArtifactManagerContract $artifacts,
     ) {}
 
     /**
@@ -81,6 +84,7 @@ final readonly class McpAppInstanceService
             return [
                 'app_id' => $instance->public_id,
                 'available' => false,
+                'advanced_enabled' => false,
                 'fallback' => 'Interactive MCP Apps require a dedicated sandbox origin.',
             ];
         }
@@ -94,10 +98,167 @@ final readonly class McpAppInstanceService
         return $snapshot + [
             'app_id' => $instance->public_id,
             'available' => true,
+            'advanced_enabled' => $this->advancedEnabled(),
             'sandbox_url' => $sandboxUrl,
             'tool_input' => $instance->tool_input,
             'tool_result' => $instance->tool_result,
         ];
+    }
+
+    public function advancedEnabled(): bool
+    {
+        return (bool) config('connector-mcp.apps.advanced_enabled', false);
+    }
+
+    /** @param array<string,mixed> $context */
+    public function replaceModelContext(McpAppInstance $instance, array $context): void
+    {
+        $content = [];
+        foreach (array_slice(is_array($context['content'] ?? null) ? $context['content'] : [], 0, 32) as $block) {
+            if (! is_array($block) || ($block['type'] ?? null) !== 'text' || ! is_string($block['text'] ?? null)) {
+                continue;
+            }
+            $content[] = [
+                'type' => 'text',
+                'text' => $block['text'],
+            ];
+        }
+        $structured = $context['structuredContent'] ?? null;
+        if ($structured !== null && (! is_array($structured) || (array_is_list($structured) && $structured !== []))) {
+            throw new \InvalidArgumentException('MCP App structured context must be an object.');
+        }
+        $normalized = array_filter([
+            'content' => $content !== [] ? $content : null,
+            'structuredContent' => is_array($structured) ? $structured : null,
+        ], static fn (mixed $value): bool => $value !== null);
+        if (! $this->fitsJsonLimit(
+            $normalized,
+            (int) config('connector-mcp.apps.max_model_context_bytes', 65_536),
+        )) {
+            throw new \InvalidArgumentException('MCP App model context exceeded the configured limit.');
+        }
+
+        $instance->forceFill(['model_context' => $normalized !== [] ? $normalized : null])->save();
+    }
+
+    public function promptContext(McpAppInstance $instance): ?string
+    {
+        $context = $instance->model_context;
+        if (! is_array($context) || $context === []) {
+            return null;
+        }
+        $parts = [];
+        foreach (is_array($context['content'] ?? null) ? $context['content'] : [] as $block) {
+            if (is_array($block) && ($block['type'] ?? null) === 'text' && is_string($block['text'] ?? null)) {
+                $parts[] = $block['text'];
+            }
+        }
+        if (is_array($context['structuredContent'] ?? null)) {
+            $json = json_encode($context['structuredContent'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if (is_string($json)) {
+                $parts[] = $json;
+            }
+        }
+        $value = trim(implode("\n\n", $parts));
+
+        return $value !== '' ? $value : null;
+    }
+
+    /**
+     * Materialize app-requested downloads as actor-scoped private artifacts.
+     * Linked resources are fetched through the authorized MCP connection; the
+     * browser never receives the remote URI as a direct download target.
+     *
+     * @param  list<array<string,mixed>>  $contents
+     * @return list<array{name:string,mime_type:string,bytes:int,url:string}>
+     */
+    public function prepareDownloads(McpAppInstance $instance, Model $actor, array $contents): array
+    {
+        $maxItems = max(1, (int) config('connector-mcp.apps.max_download_items', 5));
+        if ($contents === [] || count($contents) > $maxItems) {
+            throw new \InvalidArgumentException('MCP App download item limit exceeded.');
+        }
+        $maxBytes = max(1, (int) config('connector-mcp.apps.max_download_bytes', 10_000_000));
+        $totalBytes = 0;
+        $created = [];
+        $downloads = [];
+        $client = null;
+
+        try {
+            foreach ($contents as $item) {
+                $name = null;
+                if (($item['type'] ?? null) === 'resource_link') {
+                    $uri = is_string($item['uri'] ?? null) ? $item['uri'] : '';
+                    if ($uri === '' || strlen($uri) > 2048 || preg_match('/[\r\n]/', $uri) === 1) {
+                        throw new \InvalidArgumentException('MCP App download resource link is invalid.');
+                    }
+                    $name = is_string($item['name'] ?? null) ? $item['name'] : null;
+                    $client ??= $this->clientFor($instance);
+                    $resource = $this->readDownloadResource($client, $uri);
+                } elseif (($item['type'] ?? null) === 'resource' && is_array($item['resource'] ?? null)) {
+                    $resource = $item['resource'];
+                } else {
+                    throw new \InvalidArgumentException('MCP App downloads accept only embedded resources and resource links.');
+                }
+
+                $uri = is_string($resource['uri'] ?? null) ? $resource['uri'] : null;
+                $mime = is_string($resource['mimeType'] ?? null) && $resource['mimeType'] !== ''
+                    ? mb_substr($resource['mimeType'], 0, 255)
+                    : (is_string($resource['text'] ?? null) ? 'text/plain' : 'application/octet-stream');
+                if (is_string($resource['blob'] ?? null)) {
+                    $bytes = base64_decode($resource['blob'], true);
+                    if (! is_string($bytes)) {
+                        throw new \InvalidArgumentException('MCP App download blob is not valid base64.');
+                    }
+                } elseif (is_string($resource['text'] ?? null)) {
+                    $bytes = $resource['text'];
+                } else {
+                    throw new \InvalidArgumentException('MCP App download resource has no content.');
+                }
+                $totalBytes += strlen($bytes);
+                if ($totalBytes > $maxBytes) {
+                    throw new \InvalidArgumentException('MCP App downloads exceeded the configured byte limit.');
+                }
+                $artifact = $this->artifacts->create(
+                    Artifact::make($this->downloadName($name, $uri))
+                        ->mimeType($mime)
+                        ->contents($bytes)
+                        ->metadata([
+                            'source' => 'mcp_app',
+                            'app_id' => $instance->public_id,
+                            'connection_id' => $instance->connection->public_id,
+                        ]),
+                    $this->tenantContext->current(),
+                    (string) $actor->getKey(),
+                );
+                $created[] = (string) $artifact->getKey();
+                $downloads[] = [
+                    'name' => (string) $artifact->name,
+                    'mime_type' => (string) $artifact->mime_type,
+                    'bytes' => (int) $artifact->size_bytes,
+                    'url' => $this->artifacts->temporaryUrl(
+                        (string) $artifact->getKey(),
+                        $this->tenantContext->current(),
+                        (string) $actor->getKey(),
+                    ),
+                ];
+            }
+
+            return $downloads;
+        } catch (\Throwable $e) {
+            foreach ($created as $artifactId) {
+                try {
+                    $this->artifacts->delete(
+                        $artifactId,
+                        $this->tenantContext->current(),
+                        (string) $actor->getKey(),
+                    );
+                } catch (\Throwable) {
+                }
+            }
+
+            throw $e;
+        }
     }
 
     public function authorized(string $publicId, Model $actor, string $conversationId): McpAppInstance
@@ -147,12 +308,7 @@ final readonly class McpAppInstanceService
     /** @return array<string,mixed> */
     private function fetchResource(McpAppInstance $instance): array
     {
-        $connection = $instance->connection;
-        if ($connection->server->auth_mode === 'oauth') {
-            $this->oauth->refreshIfNeeded($connection);
-        }
-
-        $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
+        $client = $this->clientFor($instance);
         $response = $client->readResource($instance->resource_uri);
         $contents = is_array($response['contents'] ?? null) ? $response['contents'] : [];
         $resource = null;
@@ -202,6 +358,40 @@ final readonly class McpAppInstanceService
                 ? mb_substr($meta['openai/widgetDescription'], 0, 1024)
                 : null,
         ];
+    }
+
+    private function clientFor(McpAppInstance $instance): McpClient
+    {
+        $connection = $instance->connection;
+        if ($connection->server->auth_mode === 'oauth') {
+            $this->oauth->refreshIfNeeded($connection);
+        }
+
+        return McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
+    }
+
+    /** @return array<string,mixed> */
+    private function readDownloadResource(McpClient $client, string $uri): array
+    {
+        $response = $client->readResource($uri);
+        foreach (is_array($response['contents'] ?? null) ? $response['contents'] : [] as $resource) {
+            if (is_array($resource) && ($resource['uri'] ?? null) === $uri) {
+                return $resource;
+            }
+        }
+
+        throw new \RuntimeException('MCP App download resource was not returned by the server.');
+    }
+
+    private function downloadName(?string $requested, ?string $uri): string
+    {
+        if (is_string($requested) && trim($requested) !== '') {
+            return mb_substr(trim($requested), 0, 180);
+        }
+        $path = is_string($uri) ? parse_url($uri, PHP_URL_PATH) : null;
+        $name = is_string($path) ? basename($path) : '';
+
+        return $name !== '' && $name !== '/' ? mb_substr($name, 0, 180) : 'mcp-app-download';
     }
 
     private function resourceUri(McpConnectionTool $tool, McpToolResult $result): ?string

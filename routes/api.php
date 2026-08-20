@@ -56,6 +56,8 @@ Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config
         Route::post('api/conversations/mcp/interactions/{interaction}', [McpInteractionController::class, 'respond']);
         Route::get('api/conversations/mcp/apps/{app}', [McpAppController::class, 'show']);
         Route::post('api/conversations/mcp/apps/{app}/tools/call', [McpAppController::class, 'callTool']);
+        Route::put('api/conversations/mcp/apps/{app}/model-context', [McpAppController::class, 'updateModelContext']);
+        Route::post('api/conversations/mcp/apps/{app}/downloads', [McpAppController::class, 'download']);
         Route::get('api/conversations/mcp/tasks/{task}', [McpTaskController::class, 'show']);
         Route::post('api/conversations/mcp/tasks/{task}/input', [McpTaskController::class, 'input']);
         Route::post('api/conversations/mcp/tasks/{task}/cancel', [McpTaskController::class, 'cancel']);

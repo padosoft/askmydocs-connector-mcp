@@ -43,7 +43,8 @@ The connector runtime is operational behind
 The package still does not implement the scheduled source `ConnectorInterface`:
 resource ingest is an explicit, governed action instead of an automatically
 scheduled connector sync. Advanced MCP Apps host features remain separately
-feature-gated so a deployment can first validate the basic sandbox renderer.
+feature-gated through `MCP_CONNECTOR_APP_ADVANCED_ENABLED=false` so a deployment
+can first validate the basic sandbox renderer.
 
 ## Data model
 
