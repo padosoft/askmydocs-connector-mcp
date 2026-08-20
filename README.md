@@ -1,6 +1,6 @@
 # askmydocs-connector-mcp
 
-Per-user MCP account connections for AskMyDocs.
+Product-level MCP connections for AskMyDocs.
 
 This package is the product/account layer above
 [`padosoft/askmydocs-mcp-pack`](../askmydocs-mcp-pack). It does not reimplement
@@ -24,7 +24,7 @@ not depend on `askmydocs-connector-api`.
 
 ## Current status
 
-The connection + live-tools slice is operational behind
+The connector runtime is operational behind
 `MCP_CONNECTOR_ENABLED=false` by default:
 
 - public, encrypted Bearer and OAuth Authorization Code + PKCE connections;
@@ -35,11 +35,15 @@ The connection + live-tools slice is operational behind
 - paginated tool discovery, deterministic local names and risk-based policy;
 - live tool calls, write confirmation, MRTR continuation and task recognition;
 - capped LLM text plus private artifacts and signed references for binary media;
+- governed resource catalogues and bounded, redacted resource ingest;
+- remote Task polling, cancellation, recovery and retention;
+- sandboxed MCP Apps with CSP, origin checks and a constrained host bridge;
 - admin, Connected Apps, OAuth callback and conversation-interaction APIs.
 
-Resource ingest, task polling/cancellation and interactive MCP Apps rendering
-remain later slices. This package intentionally does not implement the ingest
-`ConnectorInterface` yet.
+The package still does not implement the scheduled source `ConnectorInterface`:
+resource ingest is an explicit, governed action instead of an automatically
+scheduled connector sync. Advanced MCP Apps host features remain separately
+feature-gated so a deployment can first validate the basic sandbox renderer.
 
 ## Data model
 
@@ -48,10 +52,13 @@ McpServerDefinition
   ├── McpOAuthClient
   └── McpConnection (shared/personal + optional project)
         ├── McpCredential (encrypted access/refresh token)
-        └── McpConnectionTool (catalogue + local policy)
+        ├── McpConnectionTool (catalogue + local policy)
+        └── McpConnectionResource (catalogue + ingest policy)
 
 McpOAuthAttempt (single-use state + encrypted PKCE verifier)
 McpPendingInteraction (single-use encrypted confirmation/MRTR continuation)
+McpRemoteTask (poll/cancel/recovery state)
+McpAppInstance (short-lived sandbox grant and encrypted host context)
 ```
 
 Tenant server definitions are administrator-approved infrastructure. A personal
@@ -80,6 +87,7 @@ repository as `2.0.x-dev`:
 composer install
 composer test
 composer analyse
+composer format -- --test
 ```
 
 Before publishing this package, replace the local path-repository development
@@ -92,6 +100,9 @@ override with the released `padosoft/askmydocs-mcp-pack:^2.0` dependency.
 - callback: `/api/connectors/mcp/oauth/callback`;
 - CIMD document: `/.well-known/mcp-client.json`;
 - confirmation/MRTR resume: `/api/conversations/mcp/interactions/{interaction}`.
+- task status/cancel/input: `/api/conversations/mcp/tasks/*`;
+- MCP Apps resolve, sandbox and bridge: `/api/conversations/mcp/apps/*` and
+  `/mcp-apps/sandbox`.
 
 All product routes are feature-gated and authenticated except the feature-gated
 CIMD document. Personal owner identity is always taken from the authenticated
