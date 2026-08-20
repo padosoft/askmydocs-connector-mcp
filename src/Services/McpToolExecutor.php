@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Events\McpToolInvocationFinished;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Support\McpInvocationOutcome;
@@ -24,6 +25,7 @@ final readonly class McpToolExecutor
         private McpRemoteTaskService $tasks,
         private McpArtifactEnvelopeFactory $artifacts,
         private McpAppInstanceService $apps,
+        private McpRuntimeGateContract $runtime,
     ) {}
 
     /**
@@ -39,6 +41,7 @@ final readonly class McpToolExecutor
         bool $confirmed = false,
         array $continuation = [],
     ): McpInvocationOutcome {
+        $this->assertRuntimeActive();
         $tool = $this->authorizedTool($localName, $actor, $projectKey);
         $connection = $tool->connection;
         if ($tool->confirmation_required && ! $confirmed) {
@@ -150,6 +153,7 @@ final readonly class McpToolExecutor
     /** @param array<string,mixed> $response */
     public function resume(string $pendingId, array $response, Model $actor, string $conversationId): McpInvocationOutcome
     {
+        $this->assertRuntimeActive();
         $interaction = $this->pending->consume($pendingId, $actor, $conversationId);
         $continuation = $interaction->continuation;
         $localName = (string) ($continuation['localName'] ?? '');
@@ -217,6 +221,13 @@ final readonly class McpToolExecutor
             } catch (\Throwable) {
                 // Observability must never change the tool invocation outcome.
             }
+        }
+    }
+
+    private function assertRuntimeActive(): void
+    {
+        if (! $this->runtime->active($this->tenantContext->current())) {
+            throw new \RuntimeException('The MCP connector runtime is not active for this tenant.');
         }
     }
 }

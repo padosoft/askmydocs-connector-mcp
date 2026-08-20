@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Padosoft\AskMyDocsConnectorMcp;
 
 use Illuminate\Support\ServiceProvider;
+use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\SafeHttpClientContract;
+use Padosoft\AskMyDocsConnectorMcp\Services\ConfigMcpRuntimeGate;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpCredentialVault;
 use Padosoft\AskMyDocsConnectorMcp\Services\SafeHttpClient;
 use Padosoft\AskMyDocsMcpPack\Artifacts\FlysystemArtifactManager;
@@ -21,6 +23,7 @@ final class McpConnectorServiceProvider extends ServiceProvider
         );
 
         $this->app->singleton(McpCredentialVault::class);
+        $this->app->singleton(McpRuntimeGateContract::class, ConfigMcpRuntimeGate::class);
         $this->app->singleton(SafeHttpClientContract::class, SafeHttpClient::class);
         if (! $this->app->bound(ArtifactManagerContract::class)) {
             $this->app->singleton(ArtifactManagerContract::class, FlysystemArtifactManager::class);

@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Http\Controllers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpAppInstanceService;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpToolExecutor;
@@ -20,10 +21,12 @@ final class McpAppController extends Controller
     public function __construct(
         private readonly McpAppInstanceService $apps,
         private readonly McpToolExecutor $executor,
+        private readonly McpRuntimeGateContract $runtime,
     ) {}
 
     public function show(Request $request, string $app): JsonResponse
     {
+        abort_unless($this->runtime->active(), 404);
         $data = $request->validate([
             'conversation_id' => ['required', 'string', 'max:191'],
         ]);
@@ -37,6 +40,7 @@ final class McpAppController extends Controller
 
     public function callTool(Request $request, string $app): JsonResponse
     {
+        abort_unless($this->runtime->active(), 404);
         $data = $request->validate([
             'conversation_id' => ['required', 'string', 'max:191'],
             'name' => ['required', 'string', 'max:255'],

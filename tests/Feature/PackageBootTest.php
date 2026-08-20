@@ -6,6 +6,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Tests\Feature;
 
 use Illuminate\Support\Facades\Schema;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
@@ -60,5 +61,14 @@ final class PackageBootTest extends TestCase
         $this->assertSame('acme', $tool->tenant_id);
         $this->assertFalse($tool->enabled);
         $this->assertTrue($tool->confirmation_required);
+    }
+
+    public function test_default_runtime_gate_tracks_the_package_kill_switch(): void
+    {
+        $gate = app(McpRuntimeGateContract::class);
+        $this->assertFalse($gate->active());
+
+        config()->set('connector-mcp.enabled', true);
+        $this->assertTrue($gate->active());
     }
 }

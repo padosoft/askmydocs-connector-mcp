@@ -14,6 +14,7 @@ use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\ManagesOwnConnections;
+use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpConnectionManager;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpConnectionServerAdapter;
@@ -36,6 +37,7 @@ final class McpConnector extends BaseConnector implements ManagesOwnConnections
         private readonly McpCredentialVault $mcpVault,
         private readonly McpEndpointSecurityGuard $guard,
         private readonly McpOAuthService $oauth,
+        private readonly McpRuntimeGateContract $runtime,
     ) {
         parent::__construct($vault, $tenantContext, $ingestion);
     }
@@ -62,6 +64,10 @@ final class McpConnector extends BaseConnector implements ManagesOwnConnections
 
     public function syncFull(int $installationId): SyncResult
     {
+        if (! $this->runtime->active()) {
+            return SyncResult::empty();
+        }
+
         return $this->resources->sync($this->loadInstallation($installationId));
     }
 
@@ -78,6 +84,10 @@ final class McpConnector extends BaseConnector implements ManagesOwnConnections
 
     public function health(int $installationId): HealthStatus
     {
+        if (! $this->runtime->active()) {
+            return HealthStatus::degraded('The MCP connector runtime is not active for this tenant.');
+        }
+
         try {
             $connection = $this->connectionFor($this->loadInstallation($installationId));
             if ($connection->server->auth_mode === 'oauth') {

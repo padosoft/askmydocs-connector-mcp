@@ -19,6 +19,12 @@ use Padosoft\AskMyDocsMcpPack\Support\JsonRpcMessage;
 
 final class ToolInteractionTest extends TestCase
 {
+    protected function defineEnvironment($app): void
+    {
+        parent::defineEnvironment($app);
+        $app['config']->set('connector-mcp.enabled', true);
+    }
+
     protected function tearDown(): void
     {
         McpClient::useTransportResolver(null);
