@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorMcp\Services;
 
+use Padosoft\AskMyDocsConnectorMcp\Support\McpEndpointResolution;
+
 final class McpEndpointSecurityGuard
 {
     /** @var \Closure(string):list<string> */
@@ -17,22 +19,34 @@ final class McpEndpointSecurityGuard
 
     public function assertAllowed(string $url, bool $personal = true): void
     {
+        $this->resolveAllowed($url, $personal);
+    }
+
+    public function resolveAllowed(string $url, bool $personal = true): McpEndpointResolution
+    {
         $parts = parse_url($url);
         if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
             throw new \InvalidArgumentException('Invalid MCP endpoint URL.');
         }
+        $scheme = strtolower((string) $parts['scheme']);
+        if (! in_array($scheme, ['http', 'https'], true)) {
+            throw new \InvalidArgumentException('MCP endpoints must use HTTP or HTTPS.');
+        }
         $host = strtolower(rtrim((string) $parts['host'], '.'));
-        if ($personal && strtolower((string) $parts['scheme']) !== 'https') {
+        $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
+        if ($personal && $scheme !== 'https') {
             throw new \InvalidArgumentException('Personal MCP endpoints must use HTTPS.');
         }
         if ($this->isAllowlisted($host)) {
-            return;
+            // The operator explicitly owns resolution for internal endpoints.
+            return new McpEndpointResolution($host, $port, [], false);
         }
         if ($host === 'localhost' || str_ends_with($host, '.localhost') || str_ends_with($host, '.local')) {
             throw new \InvalidArgumentException('Local MCP endpoints are not allowed.');
         }
 
-        $addresses = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : ($this->resolver)($host);
+        $isIpLiteral = filter_var($host, FILTER_VALIDATE_IP) !== false;
+        $addresses = $isIpLiteral ? [$host] : ($this->resolver)($host);
         if ($addresses === []) {
             throw new \InvalidArgumentException('MCP endpoint did not resolve to an IP address.');
         }
@@ -41,6 +55,13 @@ final class McpEndpointSecurityGuard
                 throw new \InvalidArgumentException("MCP endpoint resolves to a non-public address [{$address}].");
             }
         }
+
+        return new McpEndpointResolution(
+            host: $host,
+            port: $port,
+            addresses: array_values(array_unique($addresses)),
+            requiresPinning: ! $isIpLiteral,
+        );
     }
 
     private function isPublicAddress(string $address): bool

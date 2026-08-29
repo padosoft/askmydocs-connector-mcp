@@ -37,4 +37,19 @@ final class EndpointSecurityTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $guard->assertAllowed('http://public.example.test/mcp');
     }
+
+    public function test_public_dns_answers_are_returned_as_pinned_curl_resolutions(): void
+    {
+        $guard = new McpEndpointSecurityGuard(static fn (string $host): array => [
+            '8.8.8.8',
+            '2001:4860:4860::8888',
+        ]);
+
+        $resolution = $guard->resolveAllowed('https://public.example.test:8443/mcp');
+
+        $this->assertTrue($resolution->requiresPinning);
+        $this->assertSame([
+            'public.example.test:8443:8.8.8.8,[2001:4860:4860::8888]',
+        ], $resolution->curlResolveEntries());
+    }
 }
