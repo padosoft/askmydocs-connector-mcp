@@ -32,7 +32,8 @@ The connector runtime is operational behind
 - protected-resource, authorization-server/OIDC and CIMD/DCR discovery;
 - refresh-token rotation under a database lock and single-use callback state;
 - automatic MCP modern/legacy negotiation through `askmydocs-mcp-pack`;
-- paginated tool discovery, deterministic local names and risk-based policy;
+- paginated and item-bounded tool discovery, deterministic local names and
+  risk-based policy;
 - live tool calls, write confirmation, MRTR continuation and task recognition;
 - capped LLM text plus private artifacts and signed references for binary media;
 - governed resource catalogues and bounded, redacted resource ingest;
@@ -107,16 +108,32 @@ override with the released `padosoft/askmydocs-mcp-pack:^2.0` dependency.
 
 All product routes are feature-gated and authenticated except the feature-gated
 CIMD document. Personal owner identity is always taken from the authenticated
-session, never from request input.
+session, never from request input. Connection creation and discovery are
+rate-limited, and each owner has a configurable personal connection quota.
+
+The principal resource controls can be tuned with:
+
+```dotenv
+MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=10
+MCP_CONNECTOR_DISCOVERY_RATE_LIMIT=10
+MCP_CONNECTOR_MAX_CATALOG_ITEMS=1000
+```
+
+Setting `MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=0` disables the per-owner
+connection quota. The discovery rate is measured per authenticated user, with
+an IP fallback, by Laravel's standard throttle middleware.
 
 ## Security posture
 
 Personal endpoints require public HTTPS. DNS A/AAAA answers and every outbound
 OAuth request/redirect are checked against private, loopback, link-local,
-reserved and metadata addresses. Redirects are capped and credentials are
-removed on origin changes. Shared internal hosts require an explicit admin
-allowlist. Tokens, PKCE verifiers, client secrets, legacy headers and pending
-continuations use Laravel encrypted casts and are never returned by the API.
+reserved and metadata addresses. Public DNS answers are pinned into the cURL
+connection to prevent rebinding between validation and connect. Redirects are
+revalidated and capped, credentials are removed on origin changes, and response
+bodies are written through a hard-size-limited stream. Shared internal hosts
+require an explicit admin allowlist. Tokens, PKCE verifiers, client secrets,
+legacy headers and pending continuations use Laravel encrypted casts and are
+never returned by the API.
 
 ## License
 

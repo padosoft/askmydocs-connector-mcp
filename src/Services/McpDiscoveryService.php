@@ -115,9 +115,13 @@ final readonly class McpDiscoveryService
         $all = [];
         $cursor = null;
         $maxPages = max(1, (int) config('connector-mcp.http.max_catalog_pages', 20));
+        $maxItems = max(1, (int) config('connector-mcp.http.max_catalog_items', 1_000));
         for ($pageNumber = 0; $pageNumber < $maxPages; $pageNumber++) {
             $page = $client->listToolsPage($cursor);
             array_push($all, ...$page->items);
+            if (count($all) > $maxItems) {
+                throw new \RuntimeException('MCP tool catalog exceeded the configured item limit.');
+            }
             $cursor = $page->nextCursor;
             if ($cursor === null) {
                 return $all;

@@ -53,9 +53,13 @@ final readonly class McpResourceCatalogService
         $all = [];
         $cursor = null;
         $maxPages = max(1, (int) config('connector-mcp.http.max_catalog_pages', 20));
+        $maxItems = max(1, (int) config('connector-mcp.http.max_catalog_items', 1_000));
         for ($pageNumber = 0; $pageNumber < $maxPages; $pageNumber++) {
             $page = $client->listResourcesPage($cursor);
             array_push($all, ...$page->items);
+            if (count($all) > $maxItems) {
+                throw new \RuntimeException('MCP resource catalog exceeded the configured item limit.');
+            }
             $cursor = $page->nextCursor;
             if ($cursor === null) {
                 return $all;

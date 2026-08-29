@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Exceptions\PersonalMcpConnectionLimitExceeded;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
@@ -62,7 +63,14 @@ final class PersonalMcpConnectionsController extends Controller
             'project_key' => ['nullable', 'string', 'max:100'],
             'bearer' => ['nullable', 'string', 'max:8192'],
         ]);
-        $connection = $this->connections->createPersonal($data, $this->actor($request));
+        try {
+            $connection = $this->connections->createPersonal($data, $this->actor($request));
+        } catch (PersonalMcpConnectionLimitExceeded $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+                'errors' => ['connection' => [$exception->getMessage()]],
+            ], 422);
+        }
 
         return $this->connectCreated($connection);
     }

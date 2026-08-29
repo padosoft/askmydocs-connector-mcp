@@ -76,6 +76,27 @@ final class ResourceDiscoveryTest extends TestCase
         app(McpResourceCatalogService::class)->setEnabled($personalResource, true);
     }
 
+    public function test_resource_catalog_item_limit_is_enforced_before_reconciliation(): void
+    {
+        config()->set('connector-mcp.http.max_catalog_items', 1);
+        $transport = new ScriptedTransport;
+        $transport->responses['server/discover'] = [
+            'protocolVersion' => McpClient::MODERN_PROTOCOL_VERSION,
+            'capabilities' => ['tools' => [], 'resources' => []],
+        ];
+        $transport->responses['tools/list'] = ['tools' => []];
+        $transport->responses['resources/list'] = ['resources' => [
+            ['uri' => 'docs://one'],
+            ['uri' => 'docs://two'],
+        ]];
+        McpClient::useTransportResolver(static fn () => $transport);
+
+        $result = app(McpDiscoveryService::class)->discover($this->connection());
+
+        $this->assertStringContainsString('item limit', (string) $result['resource_catalog_error']);
+        $this->assertCount(0, $result['resources']);
+    }
+
     private function connection(string $mode = 'shared'): McpConnection
     {
         app(TenantContext::class)->set('acme');

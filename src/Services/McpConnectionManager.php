@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Exceptions\PersonalMcpConnectionLimitExceeded;
 use Padosoft\AskMyDocsConnectorMcp\McpConnector;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
@@ -36,11 +37,31 @@ final readonly class McpConnectionManager
      */
     public function createPersonal(array $attributes, Model $owner): McpConnection
     {
+        $this->assertPersonalConnectionLimit($owner);
+
         if (isset($attributes['server_id'])) {
             return $this->createPersonalForApprovedServer((int) $attributes['server_id'], $attributes, $owner);
         }
 
         return $this->create($attributes, 'personal', $owner, (string) $owner->getKey());
+    }
+
+    private function assertPersonalConnectionLimit(Model $owner): void
+    {
+        $limit = max(0, (int) config('connector-mcp.personal_connections.max_per_owner', 10));
+        if ($limit === 0) {
+            return;
+        }
+
+        $count = McpConnection::query()
+            ->where('tenant_id', $this->tenantContext->current())
+            ->where('mode', 'personal')
+            ->where('owner_type', $owner->getMorphClass())
+            ->where('owner_id', $owner->getKey())
+            ->count();
+        if ($count >= $limit) {
+            throw new PersonalMcpConnectionLimitExceeded($limit);
+        }
     }
 
     /** @param array<string,mixed> $attributes */

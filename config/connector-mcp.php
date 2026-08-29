@@ -22,7 +22,13 @@ return [
         'max_redirects' => 3,
         'max_response_bytes' => 2_000_000,
         'max_catalog_pages' => 20,
+        'max_catalog_items' => (int) env('MCP_CONNECTOR_MAX_CATALOG_ITEMS', 1_000),
         'internal_endpoint_allowlist' => [],
+    ],
+
+    'personal_connections' => [
+        'max_per_owner' => (int) env('MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS', 10),
+        'discovery_requests_per_minute' => (int) env('MCP_CONNECTOR_DISCOVERY_RATE_LIMIT', 10),
     ],
 
     'ingest' => [

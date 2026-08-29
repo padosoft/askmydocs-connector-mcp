@@ -67,6 +67,27 @@ final class DiscoveryPolicyTest extends TestCase
         $this->assertSame('tools_list', $result['connection']->error_json['phase']);
     }
 
+    public function test_tool_catalog_item_limit_is_enforced_before_reconciliation(): void
+    {
+        config()->set('connector-mcp.http.max_catalog_items', 1);
+        $transport = new ScriptedTransport;
+        $transport->responses['server/discover'] = [
+            'protocolVersion' => '2026-07-28',
+            'capabilities' => ['tools' => []],
+        ];
+        $transport->responses['tools/list'] = ['tools' => [
+            ['name' => 'one'],
+            ['name' => 'two'],
+        ]];
+        McpClient::useTransportResolver(static fn () => $transport);
+
+        $result = app(McpDiscoveryService::class)->discover($this->connection());
+
+        $this->assertStringContainsString('item limit', (string) $result['catalog_error']);
+        $this->assertSame(McpConnection::STATUS_ACTIVE, $result['connection']->status);
+        $this->assertCount(0, $result['tools']);
+    }
+
     private function connection(): McpConnection
     {
         app(TenantContext::class)->set('acme');
