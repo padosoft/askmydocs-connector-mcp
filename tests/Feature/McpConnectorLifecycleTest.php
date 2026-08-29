@@ -58,6 +58,37 @@ final class McpConnectorLifecycleTest extends TestCase
         $this->assertDatabaseCount('connector_installations', 0);
     }
 
+    public function test_explicit_oauth_connection_starts_pending_without_a_manual_credential(): void
+    {
+        app(TenantContext::class)->set('acme');
+        $owner = TestUser::query()->create(['name' => 'Marco']);
+        $connection = app(McpConnectionManager::class)->createPersonal([
+            'name' => 'OAuth MCP',
+            'endpoint' => 'https://mcp.example.test/oauth',
+            'auth_method' => 'oauth',
+        ], $owner);
+
+        $this->assertSame('oauth', $connection->server->auth_mode);
+        $this->assertSame(McpConnection::STATUS_PENDING, $connection->status);
+        $this->assertNull($connection->credential()->first());
+    }
+
+    public function test_manual_bearer_authentication_remains_supported(): void
+    {
+        app(TenantContext::class)->set('acme');
+        $owner = TestUser::query()->create(['name' => 'Marco']);
+        $connection = app(McpConnectionManager::class)->createPersonal([
+            'name' => 'Bearer MCP',
+            'endpoint' => 'https://mcp.example.test/bearer',
+            'auth_method' => 'bearer',
+            'bearer' => 'manual-secret',
+        ], $owner);
+
+        $this->assertSame('bearer', $connection->server->auth_mode);
+        $this->assertSame('manual-secret', $connection->credential()->first()?->bearer_token);
+        $this->assertArrayNotHasKey('bearer_token', $connection->credential()->firstOrFail()->toArray());
+    }
+
     public function test_duplicate_shared_labels_get_stable_unique_installation_labels(): void
     {
         app(TenantContext::class)->set('acme');

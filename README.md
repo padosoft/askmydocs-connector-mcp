@@ -111,13 +111,30 @@ CIMD document. Personal owner identity is always taken from the authenticated
 session, never from request input. Connection creation and discovery are
 rate-limited, and each owner has a configurable personal connection quota.
 
+Connection creation accepts an explicit `auth_method` of `oauth`, `bearer` or
+`none`. OAuth creation stores a pending connection and returns a server-generated
+`next_action.authorization_url`; clients must navigate to that URL instead of
+handling authorization codes or tokens themselves. The callback uses PKCE,
+single-use state bound to the authenticated owner, tenant, issuer and MCP
+resource, then stores the resulting Bearer/refresh tokens only in encrypted
+server-side credentials. Existing clients that omit `auth_method` remain
+compatible: a supplied Bearer token selects `bearer`, otherwise `none`.
+
 The principal resource controls can be tuned with:
 
 ```dotenv
+MCP_CONNECTOR_OAUTH_ENABLED=true
+MCP_CONNECTOR_OAUTH_ALLOW_INSECURE_LOCAL=false
 MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=10
 MCP_CONNECTOR_DISCOVERY_RATE_LIMIT=10
 MCP_CONNECTOR_MAX_CATALOG_ITEMS=1000
 ```
+
+`MCP_CONNECTOR_OAUTH_ALLOW_INSECURE_LOCAL` is intended only for loopback
+development and test providers. Production authorization, token and dynamic
+registration endpoints must use HTTPS. Hosts may provide pre-registered clients
+through `connector-mcp.oauth.clients`, keyed by the exact issuer; these take
+priority over CIMD and dynamic client registration.
 
 Setting `MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=0` disables the per-owner
 connection quota. The discovery rate is measured per authenticated user, with

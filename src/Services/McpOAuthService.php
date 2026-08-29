@@ -35,6 +35,9 @@ final readonly class McpOAuthService
         ?string $wwwAuthenticate = null,
         ?string $uiDestination = null,
     ): McpOAuthStart {
+        if (! (bool) config('connector-mcp.oauth.enabled', true)) {
+            throw new \RuntimeException('MCP OAuth connections are disabled.');
+        }
         if ($connection->isPersonal()) {
             $this->connections->assertOwner($connection, $owner);
         }
@@ -94,44 +97,14 @@ final readonly class McpOAuthService
         );
     }
 
-    /** @return array{connection:McpConnection,destination:string} */
+    /** @return array{connection:McpConnection,destination:string,status:string} */
     public function callback(string $state, string $code, Model $owner, ?string $issuer = null): array
     {
         if ($state === '' || $code === '') {
             throw new \InvalidArgumentException('OAuth callback is missing state or code.');
         }
 
-        [$attempt, $connection] = DB::transaction(function () use ($state, $owner, $issuer): array {
-            $attemptId = DB::table('mcp_connector_oauth_attempts')
-                ->where('tenant_id', $this->tenantContext->current())
-                ->where('state_hash', hash('sha256', $state))
-                ->lockForUpdate()
-                ->value('id');
-            if (! is_int($attemptId)) {
-                throw new ModelNotFoundException;
-            }
-            $attempt = McpOAuthAttempt::query()->findOrFail($attemptId);
-            if ($attempt->consumed_at !== null || $attempt->expires_at->isPast()) {
-                throw new \RuntimeException('OAuth state has expired or was already consumed.');
-            }
-            if ($attempt->owner_type !== $owner->getMorphClass() || (string) $attempt->owner_id !== (string) $owner->getKey()) {
-                throw new AuthorizationException('OAuth state does not belong to the authenticated user.');
-            }
-            if ($issuer !== null && ! hash_equals($attempt->issuer, $issuer)) {
-                throw new AuthorizationException('OAuth authorization response issuer mismatch.');
-            }
-            if ($attempt->authorization_response_iss_parameter_supported && $issuer === null) {
-                throw new AuthorizationException('OAuth authorization response omitted the required issuer.');
-            }
-            $connection = $attempt->connection()->with('server')->firstOrFail();
-            if ((string) $connection->tenant_id !== (string) $attempt->tenant_id
-                || ! hash_equals(rtrim((string) $connection->server->endpoint, '/'), rtrim($attempt->resource, '/'))) {
-                throw new AuthorizationException('OAuth state resource binding no longer matches the MCP connection.');
-            }
-            $attempt->forceFill(['consumed_at' => now()])->save();
-
-            return [$attempt, $connection];
-        }, 3);
+        [$attempt, $connection] = $this->consumeAttempt($state, $owner, $issuer);
 
         $form = [
             'grant_type' => 'authorization_code',
@@ -144,14 +117,23 @@ final readonly class McpOAuthService
         if (is_string($attempt->client_secret) && $attempt->client_secret !== '') {
             $form['client_secret'] = $attempt->client_secret;
         }
-        $response = $this->http->postForm($attempt->token_endpoint, $form, ['Accept' => 'application/json'], true);
+        $response = $this->http->postForm(
+            $attempt->token_endpoint,
+            $form,
+            ['Accept' => 'application/json'],
+            $connection->isPersonal(),
+        );
         if (! $response->successful() || ! is_array($response->json())) {
-            throw new \RuntimeException("OAuth token exchange failed with status {$response->status()}.");
+            return $this->failedCallback($connection, $attempt, 'token_exchange_failed');
         }
         $tokens = $response->json();
         $accessToken = $tokens['access_token'] ?? null;
         if (! is_string($accessToken) || $accessToken === '') {
-            throw new \RuntimeException('OAuth token response omitted access_token.');
+            return $this->failedCallback($connection, $attempt, 'invalid_token_response');
+        }
+        $tokenType = is_string($tokens['token_type'] ?? null) ? $tokens['token_type'] : 'Bearer';
+        if (strcasecmp($tokenType, 'Bearer') !== 0) {
+            return $this->failedCallback($connection, $attempt, 'unsupported_token_type');
         }
         $this->vault->put(
             connection: $connection,
@@ -159,7 +141,7 @@ final readonly class McpOAuthService
             refreshToken: is_string($tokens['refresh_token'] ?? null) ? $tokens['refresh_token'] : null,
             expiresAt: isset($tokens['expires_in']) ? now()->addSeconds(max(0, (int) $tokens['expires_in'])) : null,
             scopes: $this->tokenScopes($tokens, $attempt),
-            tokenType: is_string($tokens['token_type'] ?? null) ? $tokens['token_type'] : 'Bearer',
+            tokenType: 'Bearer',
             issuer: $attempt->issuer,
             resource: $attempt->resource,
         );
@@ -176,7 +158,22 @@ final readonly class McpOAuthService
         return [
             'connection' => $connection,
             'destination' => $attempt->ui_destination ?: '/app/connected-apps',
+            'status' => 'authorized',
         ];
+    }
+
+    /** @return array{connection:McpConnection,destination:string,status:string} */
+    public function deniedCallback(string $state, string $error, Model $owner, ?string $issuer = null): array
+    {
+        if ($state === '') {
+            throw new \InvalidArgumentException('OAuth callback is missing state.');
+        }
+        [, $connection, $destination] = $this->consumeAttemptWithDestination($state, $owner, $issuer);
+        $code = preg_match('/^[a-z0-9_.-]{1,64}$/i', $error) === 1 ? strtolower($error) : 'authorization_failed';
+        $status = $code === 'access_denied' ? 'oauth_denied' : 'oauth_failed';
+        $this->markAuthorizationFailure($connection, $code);
+
+        return compact('connection', 'destination', 'status');
     }
 
     public function refreshIfNeeded(McpConnection $connection): void
@@ -186,7 +183,7 @@ final readonly class McpOAuthService
             return;
         }
         if (! is_string($credential->refresh_token) || $credential->refresh_token === '') {
-            $connection->forceFill(['status' => McpConnection::STATUS_REAUTHORIZATION_REQUIRED])->save();
+            $this->markReauthorizationRequired($connection, 'refresh_token_unavailable');
             throw new \RuntimeException('The MCP OAuth connection requires reauthorization.');
         }
 
@@ -196,31 +193,75 @@ final readonly class McpOAuthService
             : (string) $connection->server->endpoint;
         $metadata = $this->discoverAuthorizationMetadata($resource, null, $connection->isPersonal());
         if (is_string($credential->issuer) && $credential->issuer !== '' && ! hash_equals($credential->issuer, $metadata['issuer'])) {
+            $this->markReauthorizationRequired($connection, 'issuer_changed');
             throw new \RuntimeException('OAuth issuer changed; reauthorization is required.');
         }
         $client = $this->resolveClient($metadata, $connection->isPersonal());
 
-        $this->vault->rotateExpired($connection, function (McpCredential $locked) use ($resource, $metadata, $client, $connection): array {
-            if (! is_string($locked->refresh_token) || $locked->refresh_token === '') {
-                throw new \RuntimeException('The MCP OAuth refresh token is unavailable.');
-            }
-            $form = [
-                'grant_type' => 'refresh_token',
-                'refresh_token' => $locked->refresh_token,
-                'client_id' => $client['client_id'],
-                'resource' => $resource,
-            ];
-            if ($client['client_secret'] !== null && $client['client_secret'] !== '') {
-                $form['client_secret'] = $client['client_secret'];
-            }
-            $response = $this->http->postForm($metadata['token_endpoint'], $form, ['Accept' => 'application/json'], $connection->isPersonal());
-            $payload = $response->json();
-            if (! $response->successful() || ! is_array($payload)) {
-                throw new \RuntimeException("OAuth refresh failed with status {$response->status()}.");
+        $reauthorizationCode = null;
+        try {
+            $this->vault->rotateExpired($connection, function (McpCredential $locked) use ($resource, $metadata, $client, $connection, &$reauthorizationCode): array {
+                if (! is_string($locked->refresh_token) || $locked->refresh_token === '') {
+                    $reauthorizationCode = 'refresh_token_unavailable';
+                    throw new \RuntimeException('The MCP OAuth refresh token is unavailable.');
+                }
+                $form = [
+                    'grant_type' => 'refresh_token',
+                    'refresh_token' => $locked->refresh_token,
+                    'client_id' => $client['client_id'],
+                    'resource' => $resource,
+                ];
+                if ($client['client_secret'] !== null && $client['client_secret'] !== '') {
+                    $form['client_secret'] = $client['client_secret'];
+                }
+                $response = $this->http->postForm($metadata['token_endpoint'], $form, ['Accept' => 'application/json'], $connection->isPersonal());
+                $payload = $response->json();
+                if (! $response->successful() || ! is_array($payload)) {
+                    $oauthError = is_array($payload) && is_string($payload['error'] ?? null) ? $payload['error'] : null;
+                    if (in_array($response->status(), [400, 401], true) || $oauthError === 'invalid_grant') {
+                        $reauthorizationCode = $oauthError ?? 'refresh_rejected';
+                    }
+                    throw new \RuntimeException("OAuth refresh failed with status {$response->status()}.");
+                }
+                $tokenType = is_string($payload['token_type'] ?? null) ? $payload['token_type'] : 'Bearer';
+                if (strcasecmp($tokenType, 'Bearer') !== 0) {
+                    $reauthorizationCode = 'unsupported_token_type';
+                    throw new \RuntimeException('OAuth refresh returned an unsupported token type.');
+                }
+                $payload['token_type'] = 'Bearer';
+
+                return $payload;
+            });
+        } catch (\Throwable $exception) {
+            if ($reauthorizationCode !== null) {
+                $this->markReauthorizationRequired($connection, $reauthorizationCode);
             }
 
-            return $payload;
-        });
+            throw $exception;
+        }
+    }
+
+    public function requireReauthorization(McpConnection $connection, string $challenge, int $status): void
+    {
+        $connection->loadMissing('server');
+        $scopes = $this->scopesFromChallenge($challenge);
+        $oauthError = $this->challengeParameter($challenge, 'error');
+        $code = $oauthError === 'insufficient_scope' || $status === 403
+            ? 'insufficient_scope'
+            : 'authorization_required';
+        $connection->server->forceFill(['oauth_metadata_json' => [
+            'www_authenticate' => mb_substr($challenge, 0, 4096),
+            'challenged_at' => now()->toIso8601String(),
+        ]])->save();
+        $connection->forceFill([
+            'status' => McpConnection::STATUS_REAUTHORIZATION_REQUIRED,
+            'error_json' => [
+                'phase' => 'oauth_challenge',
+                'code' => $code,
+                'http_status' => $status,
+                'required_scopes' => $scopes,
+            ],
+        ])->save();
     }
 
     /** @return array{issuer:string,authorization_endpoint:string,token_endpoint:string,registration_endpoint:?string,scopes_supported:list<string>,client_id_metadata_document_supported:bool,authorization_response_iss_parameter_supported:bool} */
@@ -250,6 +291,7 @@ final readonly class McpOAuthService
             throw new \RuntimeException('OAuth discovery did not advertise an authorization server.');
         }
         $issuer = rtrim($issuer, '/');
+        $this->assertSecureOAuthUrl($issuer, 'issuer');
         $authorization = null;
         foreach ($this->authorizationMetadataUrls($issuer) as $metadataUrl) {
             $response = $this->http->get($metadataUrl, ['Accept' => 'application/json'], $personal);
@@ -273,6 +315,10 @@ final readonly class McpOAuthService
             if (! is_string($authorization[$required] ?? null)) {
                 throw new \RuntimeException("Authorization server metadata omitted {$required}.");
             }
+            $this->assertSecureOAuthUrl($authorization[$required], $required);
+        }
+        if (is_string($authorization['registration_endpoint'] ?? null)) {
+            $this->assertSecureOAuthUrl($authorization['registration_endpoint'], 'registration_endpoint');
         }
 
         return [
@@ -292,6 +338,17 @@ final readonly class McpOAuthService
      */
     private function resolveClient(array $metadata, bool $personal): array
     {
+        $configuredClients = (array) config('connector-mcp.oauth.clients', []);
+        $configured = $configuredClients[$metadata['issuer']] ?? null;
+        if (is_array($configured) && is_string($configured['client_id'] ?? null) && $configured['client_id'] !== '') {
+            return [
+                'client_id' => $configured['client_id'],
+                'client_secret' => is_string($configured['client_secret'] ?? null) && $configured['client_secret'] !== ''
+                    ? $configured['client_secret']
+                    : null,
+            ];
+        }
+
         $stored = McpOAuthClient::query()
             ->where('tenant_id', $this->tenantContext->current())
             ->where('issuer_hash', hash('sha256', $metadata['issuer']))
@@ -447,6 +504,92 @@ final readonly class McpOAuthService
         return is_string($destination) && str_starts_with($destination, '/') && ! str_starts_with($destination, '//')
             ? $destination
             : null;
+    }
+
+    /** @return array{McpOAuthAttempt,McpConnection} */
+    private function consumeAttempt(string $state, Model $owner, ?string $issuer): array
+    {
+        [$attempt, $connection] = $this->consumeAttemptWithDestination($state, $owner, $issuer);
+
+        return [$attempt, $connection];
+    }
+
+    /** @return array{McpOAuthAttempt,McpConnection,string} */
+    private function consumeAttemptWithDestination(string $state, Model $owner, ?string $issuer): array
+    {
+        return DB::transaction(function () use ($state, $owner, $issuer): array {
+            $attemptId = DB::table('mcp_connector_oauth_attempts')
+                ->where('tenant_id', $this->tenantContext->current())
+                ->where('state_hash', hash('sha256', $state))
+                ->lockForUpdate()
+                ->value('id');
+            if (! is_int($attemptId)) {
+                throw new ModelNotFoundException;
+            }
+            $attempt = McpOAuthAttempt::query()->findOrFail($attemptId);
+            if ($attempt->consumed_at !== null || $attempt->expires_at->isPast()) {
+                throw new \RuntimeException('OAuth state has expired or was already consumed.');
+            }
+            if ($attempt->owner_type !== $owner->getMorphClass() || (string) $attempt->owner_id !== (string) $owner->getKey()) {
+                throw new AuthorizationException('OAuth state does not belong to the authenticated user.');
+            }
+            if ($issuer !== null && ! hash_equals($attempt->issuer, $issuer)) {
+                throw new AuthorizationException('OAuth authorization response issuer mismatch.');
+            }
+            if ($attempt->authorization_response_iss_parameter_supported && $issuer === null) {
+                throw new AuthorizationException('OAuth authorization response omitted the required issuer.');
+            }
+            $connection = $attempt->connection()->with('server')->firstOrFail();
+            if ((string) $connection->tenant_id !== (string) $attempt->tenant_id
+                || ! hash_equals(rtrim((string) $connection->server->endpoint, '/'), rtrim($attempt->resource, '/'))) {
+                throw new AuthorizationException('OAuth state resource binding no longer matches the MCP connection.');
+            }
+            $attempt->forceFill(['consumed_at' => now()])->save();
+
+            return [$attempt, $connection, $attempt->ui_destination ?: '/app/connected-apps'];
+        }, 3);
+    }
+
+    /** @return array{connection:McpConnection,destination:string,status:string} */
+    private function failedCallback(McpConnection $connection, McpOAuthAttempt $attempt, string $code): array
+    {
+        $this->markAuthorizationFailure($connection, $code);
+
+        return [
+            'connection' => $connection,
+            'destination' => $attempt->ui_destination ?: '/app/connected-apps',
+            'status' => 'oauth_failed',
+        ];
+    }
+
+    private function markAuthorizationFailure(McpConnection $connection, string $code): void
+    {
+        $changes = ['error_json' => ['phase' => 'oauth_authorization', 'code' => $code]];
+        if ($connection->status !== McpConnection::STATUS_ACTIVE) {
+            $changes['status'] = McpConnection::STATUS_ERRORED;
+        }
+        $connection->forceFill($changes)->save();
+    }
+
+    private function markReauthorizationRequired(McpConnection $connection, string $code): void
+    {
+        $connection->forceFill([
+            'status' => McpConnection::STATUS_REAUTHORIZATION_REQUIRED,
+            'error_json' => ['phase' => 'oauth_refresh', 'code' => $code],
+        ])->save();
+    }
+
+    private function assertSecureOAuthUrl(string $url, string $label): void
+    {
+        $parts = parse_url($url);
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $localHttp = $scheme === 'http'
+            && (bool) config('connector-mcp.oauth.allow_insecure_local', false)
+            && ($host === 'localhost' || $host === '::1' || str_starts_with($host, '127.'));
+        if (! is_array($parts) || ($scheme !== 'https' && ! $localHttp) || $host === '') {
+            throw new \RuntimeException("OAuth {$label} must be an absolute HTTPS URL.");
+        }
     }
 
     private function base64Url(string $value): string

@@ -38,6 +38,8 @@ return [
     ],
 
     'oauth' => [
+        'enabled' => (bool) env('MCP_CONNECTOR_OAUTH_ENABLED', true),
+        'allow_insecure_local' => (bool) env('MCP_CONNECTOR_OAUTH_ALLOW_INSECURE_LOCAL', false),
         'callback_path' => env('MCP_CONNECTOR_OAUTH_CALLBACK_PATH', '/api/connectors/mcp/oauth/callback'),
         'state_ttl_seconds' => (int) env('MCP_CONNECTOR_OAUTH_STATE_TTL', 600),
         'pkce' => true,
@@ -46,6 +48,19 @@ return [
         'client_name' => env('APP_NAME', 'AskMyDocs'),
         'client_uri' => env('APP_URL'),
         'default_scopes' => [],
+        /*
+         * Optional OAuth clients registered ahead of time, keyed by the exact
+         * authorization-server issuer. Client secrets should come from the
+         * host environment and must never be exposed through an API response.
+         *
+         * 'clients' => [
+         *     'https://auth.example.com' => [
+         *         'client_id' => env('MCP_CONNECTOR_EXAMPLE_CLIENT_ID'),
+         *         'client_secret' => env('MCP_CONNECTOR_EXAMPLE_CLIENT_SECRET'),
+         *     ],
+         * ],
+         */
+        'clients' => [],
     ],
 
     'tool_policy' => [

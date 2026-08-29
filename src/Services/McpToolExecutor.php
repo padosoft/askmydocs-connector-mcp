@@ -10,8 +10,10 @@ use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Events\McpToolInvocationFinished;
+use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Support\McpInvocationOutcome;
+use Padosoft\AskMyDocsMcpPack\Contracts\McpProtocolAwareTransportContract;
 use Padosoft\AskMyDocsMcpPack\Services\McpClient;
 
 final readonly class McpToolExecutor
@@ -68,6 +70,7 @@ final readonly class McpToolExecutor
             'invocation_id' => $invocationId,
             'timestamp' => now()->toIso8601String(),
         ];
+        $client = null;
         try {
             if ($connection->server->auth_mode === 'oauth') {
                 $this->oauth->refreshIfNeeded($connection);
@@ -134,6 +137,7 @@ final readonly class McpToolExecutor
 
             return $outcome;
         } catch (\Throwable $exception) {
+            $this->captureOAuthChallenge($connection, $client);
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
             $this->emit(new McpToolInvocationFinished(
                 $tool,
@@ -221,6 +225,36 @@ final readonly class McpToolExecutor
             } catch (\Throwable) {
                 // Observability must never change the tool invocation outcome.
             }
+        }
+    }
+
+    private function captureOAuthChallenge(McpConnection $connection, ?McpClient $client): void
+    {
+        if ($connection->server->auth_mode !== 'oauth') {
+            return;
+        }
+        $transport = $client?->transport();
+        if (! $transport instanceof McpProtocolAwareTransportContract) {
+            return;
+        }
+        $status = $transport->lastStatusCode();
+        if (! in_array($status, [401, 403], true)) {
+            return;
+        }
+        $challenge = null;
+        foreach ($transport->lastResponseHeaders() as $header => $values) {
+            if (strcasecmp($header, 'www-authenticate') === 0 && is_string($values[0] ?? null)) {
+                $challenge = $values[0];
+                break;
+            }
+        }
+        if ($challenge === null) {
+            return;
+        }
+        try {
+            $this->oauth->requireReauthorization($connection, $challenge, $status);
+        } catch (\Throwable) {
+            // Authorization state tracking must never replace the tool error.
         }
     }
 

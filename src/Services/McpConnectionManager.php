@@ -105,7 +105,7 @@ final readonly class McpConnectionManager
         if ($mode === 'personal' && $transport === 'stdio_imported') {
             throw new \InvalidArgumentException('Personal MCP connections cannot use stdio.');
         }
-        $authMode = isset($attributes['bearer']) && trim((string) $attributes['bearer']) !== '' ? 'bearer' : 'none';
+        $authMode = $this->authMode($attributes);
         $tenant = $this->tenantContext->current();
 
         return DB::transaction(function () use ($attributes, $mode, $owner, $createdBy, $endpoint, $transport, $authMode, $tenant): McpConnection {
@@ -308,6 +308,29 @@ final readonly class McpConnectionManager
         if ((string) $connection->tenant_id !== $this->tenantContext->current()) {
             throw new AuthorizationException('MCP connection is outside the active tenant.');
         }
+    }
+
+    /** @param array<string,mixed> $attributes */
+    private function authMode(array $attributes): string
+    {
+        $requested = $attributes['auth_method'] ?? null;
+        if ($requested === null || $requested === '') {
+            return isset($attributes['bearer']) && trim((string) $attributes['bearer']) !== ''
+                ? 'bearer'
+                : 'none';
+        }
+        if (! is_string($requested) || ! in_array($requested, ['none', 'bearer', 'oauth'], true)) {
+            throw new \InvalidArgumentException('Unsupported MCP authentication method.');
+        }
+        $bearer = isset($attributes['bearer']) ? trim((string) $attributes['bearer']) : '';
+        if ($requested === 'bearer' && $bearer === '') {
+            throw new \InvalidArgumentException('Bearer authentication requires a token.');
+        }
+        if ($requested !== 'bearer' && $bearer !== '') {
+            throw new \InvalidArgumentException('A Bearer token may only be supplied with Bearer authentication.');
+        }
+
+        return $requested;
     }
 
     private function installationLabel(string $tenant, string $label, string $publicId, ?int $ignoreId = null): string
