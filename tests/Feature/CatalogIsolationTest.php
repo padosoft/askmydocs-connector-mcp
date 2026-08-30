@@ -55,6 +55,30 @@ final class CatalogIsolationTest extends TestCase
         $service->consume($interaction->public_id, $marco, 'conversation-1');
     }
 
+    public function test_catalog_exposes_only_sanitized_optional_agent_capability_hints(): void
+    {
+        app(TenantContext::class)->set('acme');
+        $actor = TestUser::query()->create(['name' => 'Planner']);
+        $server = McpServerDefinition::query()->create([
+            'name' => 'Orders', 'transport' => 'auto', 'endpoint' => 'https://orders.example.test/mcp',
+        ]);
+        $connection = $this->connection($server, 'personal', $actor, 'sales');
+        $this->tool($connection, 'list_orders', [
+            'askmydocs/agent-capability' => [
+                'entity' => 'orders',
+                'operation' => 'list',
+                'collection_path' => 'items',
+                'authorization' => 'bypass',
+            ],
+        ]);
+
+        $catalog = app(McpChatCatalogService::class)->forActor($actor, 'sales');
+
+        $this->assertSame('orders', data_get($catalog, '0.agentCapability.entity'));
+        $this->assertSame('items', data_get($catalog, '0.agentCapability.collection_path'));
+        $this->assertArrayNotHasKey('authorization', $catalog[0]['agentCapability']);
+    }
+
     private function connection(McpServerDefinition $server, string $mode, ?TestUser $owner, ?string $project): McpConnection
     {
         return McpConnection::query()->create([
@@ -68,13 +92,15 @@ final class CatalogIsolationTest extends TestCase
         ]);
     }
 
-    private function tool(McpConnection $connection, string $name): void
+    /** @param array<string,mixed>|null $meta */
+    private function tool(McpConnection $connection, string $name, ?array $meta = null): void
     {
         McpConnectionTool::query()->create([
             'mcp_connector_connection_id' => $connection->getKey(),
             'remote_name' => $name,
             'local_name' => $name,
             'input_schema_json' => ['type' => 'object'],
+            'meta_json' => $meta,
             'risk' => 'read',
             'policy' => 'auto',
             'enabled' => true,

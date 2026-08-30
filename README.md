@@ -80,6 +80,18 @@ tools returned for the user's OAuth identity
 Discovered annotations are persisted but remain untrusted input. Unknown or
 write-like tools default to disabled and confirmation-required.
 
+### Optional agent capability hints
+
+An MCP server may add a compact advisory routing hint under
+`_meta["askmydocs/agent-capability"]`. The connector validates and exposes only
+the following fields to hosts: `entity`, `operation`, `intent_tags`, `requires`,
+`produces`, `collection_path`, `identity_fields` and `next_tools`. Supported
+operations are `search`, `list`, `get`, `detail`, `summary`, `count` and `check`.
+
+Hints are optional and never override authentication, tenant/project scope,
+risk, read-only annotations or confirmation policy. Standard MCP tools without
+this extension remain fully supported through host-side schema inference.
+
 ## Local development
 
 The sibling `askmydocs-mcp-pack` repository is resolved through a Composer path

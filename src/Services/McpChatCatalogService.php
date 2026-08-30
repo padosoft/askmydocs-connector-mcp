@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Services;
 use Illuminate\Database\Eloquent\Model;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
+use Padosoft\AskMyDocsConnectorMcp\Support\McpAgentCapabilityHint;
 
 final readonly class McpChatCatalogService
 {
@@ -48,6 +49,7 @@ final readonly class McpChatCatalogService
             'outputSchema' => $tool->output_schema_json,
             'annotations' => $tool->annotations_json,
             '_meta' => $tool->meta_json,
+            'agentCapability' => McpAgentCapabilityHint::fromMeta($tool->meta_json),
             'risk' => $tool->risk,
             'confirmationRequired' => (bool) $tool->confirmation_required,
             'source' => 'mcp',
