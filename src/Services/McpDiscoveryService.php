@@ -25,6 +25,7 @@ final readonly class McpDiscoveryService
         private McpLocalToolName $names,
         private McpToolPolicy $policy,
         private McpResourceCatalogService $resources,
+        private McpToolCatalogFingerprint $fingerprint,
     ) {}
 
     /** @return array{connection:McpConnection,tools:list<McpConnectionTool>,resources:list<McpConnectionResource>,catalog_error:?string,resource_catalog_error:?string} */
@@ -67,12 +68,16 @@ final readonly class McpDiscoveryService
         try {
             $remoteTools = $this->drainTools($client);
             $tools = $this->reconcile($connection, $remoteTools);
+            $connection->forceFill([
+                'catalog_hash' => $this->fingerprint->forConnection($connection),
+            ])->save();
             $catalogError = null;
         } catch (\Throwable $e) {
             // Protocol/auth is healthy: an empty or failed catalog must not turn
             // the connection itself into a false-negative.
             $catalogError = $e->getMessage();
             $catalogErrors['tools'] = ['class' => $e::class, 'message' => $catalogError];
+            $connection->forceFill(['catalog_hash' => null])->save();
             $tools = [];
         }
 

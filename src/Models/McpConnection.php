@@ -24,6 +24,7 @@ use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
  * @property string $label
  * @property string|null $project_key
  * @property string $status
+ * @property string|null $catalog_hash
  * @property array<string,mixed>|null $error_json
  * @property array<string,mixed>|null $granted_scopes_json
  * @property array<string,mixed>|null $account_metadata_json
@@ -61,6 +62,7 @@ final class McpConnection extends Model
         'status',
         'last_authorized_at',
         'last_discovered_at',
+        'catalog_hash',
         'error_json',
     ];
 

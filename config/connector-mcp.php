@@ -24,6 +24,9 @@ return [
         'max_catalog_pages' => 20,
         'max_catalog_items' => (int) env('MCP_CONNECTOR_MAX_CATALOG_ITEMS', 1_000),
         'internal_endpoint_allowlist' => [],
+        // Modern MCP discovery is stateless. Reuse a recently persisted
+        // negotiation during tool calls; legacy sessions are never reused.
+        'runtime_negotiation_ttl_seconds' => (int) env('MCP_CONNECTOR_NEGOTIATION_TTL', 900),
     ],
 
     'personal_connections' => [

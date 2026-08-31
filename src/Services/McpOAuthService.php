@@ -178,8 +178,19 @@ final readonly class McpOAuthService
 
     public function refreshIfNeeded(McpConnection $connection): void
     {
+        $this->refresh($connection, false);
+    }
+
+    /** Force one refresh after an upstream invalid-token challenge. */
+    public function refreshAfterUnauthorized(McpConnection $connection): void
+    {
+        $this->refresh($connection, true);
+    }
+
+    private function refresh(McpConnection $connection, bool $force): void
+    {
         $credential = $this->vault->oauthCredential($connection);
-        if ($credential === null || ! $credential->isExpired()) {
+        if ($credential === null || (! $force && ! $credential->isExpired())) {
             return;
         }
         if (! is_string($credential->refresh_token) || $credential->refresh_token === '') {
@@ -200,7 +211,8 @@ final readonly class McpOAuthService
 
         $reauthorizationCode = null;
         try {
-            $this->vault->rotateExpired($connection, function (McpCredential $locked) use ($resource, $metadata, $client, $connection, &$reauthorizationCode): array {
+            $rotate = $force ? 'rotate' : 'rotateExpired';
+            $this->vault->{$rotate}($connection, function (McpCredential $locked) use ($resource, $metadata, $client, $connection, &$reauthorizationCode): array {
                 if (! is_string($locked->refresh_token) || $locked->refresh_token === '') {
                     $reauthorizationCode = 'refresh_token_unavailable';
                     throw new \RuntimeException('The MCP OAuth refresh token is unavailable.');
@@ -244,13 +256,18 @@ final readonly class McpOAuthService
     public function requireReauthorization(McpConnection $connection, string $challenge, int $status): void
     {
         $connection->loadMissing('server');
+        $challenge = mb_substr(
+            (string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $challenge),
+            0,
+            4096,
+        );
         $scopes = $this->scopesFromChallenge($challenge);
         $oauthError = $this->challengeParameter($challenge, 'error');
         $code = $oauthError === 'insufficient_scope' || $status === 403
             ? 'insufficient_scope'
             : 'authorization_required';
         $connection->server->forceFill(['oauth_metadata_json' => [
-            'www_authenticate' => mb_substr($challenge, 0, 4096),
+            'www_authenticate' => $challenge,
             'challenged_at' => now()->toIso8601String(),
         ]])->save();
         $connection->forceFill([

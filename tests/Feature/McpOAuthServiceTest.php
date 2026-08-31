@@ -172,6 +172,37 @@ final class McpOAuthServiceTest extends TestCase
         $this->assertSame(1, $credential?->rotation_version);
     }
 
+    public function test_upstream_unauthorized_can_force_one_refresh_of_a_non_expired_token(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', 'https://askmydocs.example/.well-known/mcp-client.json');
+        $this->metadataResponses($http);
+        $http->respond('POST_FORM', 'https://auth.example.test/tenant/token', 200, [
+            'access_token' => 'forced-access',
+            'refresh_token' => 'forced-refresh',
+            'expires_in' => 7200,
+        ]);
+
+        [$connection] = $this->personalConnection();
+        $connection->server()->update(['auth_mode' => 'oauth']);
+        app(McpCredentialVault::class)->put(
+            connection: $connection,
+            accessToken: 'rejected-but-not-expired',
+            refreshToken: 'old-refresh',
+            expiresAt: now()->addHour(),
+            issuer: 'https://auth.example.test/tenant',
+            resource: 'https://mcp.example.test/mcp',
+        );
+
+        app(McpOAuthService::class)->refreshAfterUnauthorized($connection->fresh('server'));
+
+        $credential = app(McpCredentialVault::class)->oauthCredential($connection);
+        $this->assertSame('forced-access', $credential?->access_token);
+        $this->assertSame('forced-refresh', $credential?->refresh_token);
+        $this->assertSame(1, $credential?->rotation_version);
+    }
+
     public function test_invalid_grant_marks_the_connection_for_reauthorization(): void
     {
         $http = new OAuthFakeHttpClient;

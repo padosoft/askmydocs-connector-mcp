@@ -10,11 +10,16 @@ use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\McpRuntimeGateContract;
 use Padosoft\AskMyDocsConnectorMcp\Events\McpToolInvocationFinished;
+use Padosoft\AskMyDocsConnectorMcp\Exceptions\McpInvocationException;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Support\McpInvocationOutcome;
 use Padosoft\AskMyDocsMcpPack\Contracts\McpProtocolAwareTransportContract;
+use Padosoft\AskMyDocsMcpPack\Exceptions\McpAuthorizationException;
+use Padosoft\AskMyDocsMcpPack\Exceptions\McpRemoteErrorException;
 use Padosoft\AskMyDocsMcpPack\Services\McpClient;
+use Padosoft\AskMyDocsMcpPack\Support\McpNegotiationResult;
+use Padosoft\AskMyDocsMcpPack\Support\McpProtocolEra;
 
 final readonly class McpToolExecutor
 {
@@ -28,6 +33,7 @@ final readonly class McpToolExecutor
         private McpArtifactEnvelopeFactory $artifacts,
         private McpAppInstanceService $apps,
         private McpRuntimeGateContract $runtime,
+        private McpToolCatalogFingerprint $fingerprint,
     ) {}
 
     /**
@@ -71,14 +77,57 @@ final readonly class McpToolExecutor
             'timestamp' => now()->toIso8601String(),
         ];
         $client = null;
+        $clients = [];
+        $cacheHits = [];
+        $runtimeProvenance = [];
         try {
+            $oauthStartedAt = microtime(true);
             if ($connection->server->auth_mode === 'oauth') {
                 $this->oauth->refreshIfNeeded($connection);
             }
+            $runtimeProvenance['oauth_refresh_ms'] = $this->elapsedMs($oauthStartedAt);
+            $clientStartedAt = microtime(true);
             $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
-            $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+            $cacheHits[] = $this->reuseRecentModernNegotiation($client, $connection);
+            $clients[] = $client;
+            $runtimeProvenance['client_prepare_ms'] = $this->elapsedMs($clientStartedAt);
+            $toolStartedAt = microtime(true);
+            try {
+                $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+            } catch (McpAuthorizationException $exception) {
+                if (! $tool->read_only
+                    || $connection->server->auth_mode !== 'oauth'
+                    || $exception->httpStatus !== 401
+                    || $exception->oauthError === 'insufficient_scope') {
+                    throw $exception;
+                }
+
+                $refreshStartedAt = microtime(true);
+                $this->oauth->refreshAfterUnauthorized($connection);
+                $runtimeProvenance['oauth_refresh_ms'] += $this->elapsedMs($refreshStartedAt);
+                $runtimeProvenance['recovery'] = 'oauth_refresh';
+                $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
+                $cacheHits[] = $this->reuseRecentModernNegotiation($client, $connection);
+                $clients[] = $client;
+                $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+            } catch (McpRemoteErrorException $exception) {
+                if (! $tool->read_only || ! $this->requiresRenegotiation($exception)) {
+                    throw $exception;
+                }
+
+                $runtimeProvenance['recovery'] = 'renegotiated';
+                $client = McpClient::forServer(new McpConnectionServerAdapter($connection, $this->vault, $this->guard));
+                $cacheHits[] = false;
+                $clients[] = $client;
+                $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+                $this->persistNegotiation($connection, $client);
+            }
+            $runtimeProvenance = array_replace(
+                $runtimeProvenance,
+                $this->clientProvenance($clients, $cacheHits, $this->elapsedMs($toolStartedAt)),
+            );
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
-            $provenance = $baseProvenance + ['latency_ms' => $latencyMs];
+            $provenance = $baseProvenance + $runtimeProvenance + ['latency_ms' => $latencyMs];
 
             if ($result->isTask()) {
                 $task = $this->tasks->capture(
@@ -138,19 +187,30 @@ final readonly class McpToolExecutor
             return $outcome;
         } catch (\Throwable $exception) {
             $this->captureOAuthChallenge($connection, $client);
+            if ($clients !== []) {
+                $runtimeProvenance = array_replace(
+                    $runtimeProvenance,
+                    $this->clientProvenance($clients, $cacheHits, null),
+                );
+            }
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $failureProvenance = $baseProvenance + $runtimeProvenance + ['latency_ms' => $latencyMs];
             $this->emit(new McpToolInvocationFinished(
                 $tool,
                 $arguments,
                 $actor,
                 $conversationId,
                 null,
-                $baseProvenance + ['latency_ms' => $latencyMs],
+                $failureProvenance,
                 $latencyMs,
                 $exception,
             ));
 
-            throw $exception;
+            throw new McpInvocationException(
+                $exception,
+                $failureProvenance,
+                $this->failureCode($exception),
+            );
         }
     }
 
@@ -256,6 +316,143 @@ final readonly class McpToolExecutor
         } catch (\Throwable) {
             // Authorization state tracking must never replace the tool error.
         }
+    }
+
+    private function reuseRecentModernNegotiation(McpClient $client, McpConnection $connection): bool
+    {
+        $server = $connection->server;
+        $ttl = max(0, (int) config('connector-mcp.http.runtime_negotiation_ttl_seconds', 900));
+        $discoveredAt = $connection->last_discovered_at;
+        if ($ttl === 0
+            || $server->negotiated_era !== McpProtocolEra::Modern->value
+            || $server->negotiated_version !== McpClient::MODERN_PROTOCOL_VERSION
+            || $discoveredAt === null
+            || $discoveredAt->lt(now()->subSeconds($ttl))
+            || ! is_string($connection->catalog_hash)
+            || ! hash_equals($connection->catalog_hash, $this->fingerprint->forConnection($connection))) {
+            return false;
+        }
+
+        $client->useNegotiation(new McpNegotiationResult(
+            era: McpProtocolEra::Modern,
+            protocolVersion: McpClient::MODERN_PROTOCOL_VERSION,
+            capabilities: is_array($server->capabilities_json) ? $server->capabilities_json : [],
+            serverInfo: is_array($server->server_info_json) ? $server->server_info_json : [],
+        ));
+
+        return true;
+    }
+
+    /**
+     * @param  list<McpClient>  $clients
+     * @param  list<bool>  $cacheHits
+     * @return array<string,mixed>
+     */
+    private function clientProvenance(array $clients, array $cacheHits, ?int $toolCallMs): array
+    {
+        $client = $clients[array_key_last($clients)];
+        $negotiated = $client->negotiatedProtocol();
+        $provenance = [
+            'negotiation_cache_hit' => ($cacheHits[0] ?? false) === true,
+            'physical_request_count' => array_sum(array_map(
+                static fn (McpClient $attempt): int => $attempt->physicalRequestCount(),
+                $clients,
+            )),
+            'protocol_era' => $negotiated?->era->value,
+            'protocol_version' => $negotiated?->protocolVersion,
+        ];
+        if ($toolCallMs !== null) {
+            $provenance['tool_pipeline_ms'] = $toolCallMs;
+            $provenance['tool_call_ms'] = $toolCallMs;
+        }
+
+        $metrics = [];
+        foreach ($clients as $attempt) {
+            $transport = $attempt->transport();
+            if (! method_exists($transport, 'requestMetrics')) {
+                continue;
+            }
+            $attemptMetrics = $transport->requestMetrics();
+            if (is_array($attemptMetrics)) {
+                array_push($metrics, ...$attemptMetrics);
+            }
+        }
+        if ($metrics === []) {
+            return $provenance;
+        }
+        $sum = static fn (string $key, ?callable $filter = null): int => array_sum(array_map(
+            static fn (mixed $metric): int => is_array($metric) && ($filter === null || $filter($metric))
+                ? (int) ($metric[$key] ?? 0)
+                : 0,
+            $metrics,
+        ));
+        $duration = static fn (array $metric): int => (int) ($metric['endpoint_guard_ms'] ?? 0)
+            + (int) ($metric['http_ms'] ?? 0)
+            + (int) ($metric['decode_ms'] ?? 0);
+        $isDiscovery = static fn (array $metric): bool => in_array(
+            $metric['method'] ?? null,
+            ['server/discover', 'initialize'],
+            true,
+        );
+        $isToolCall = static fn (array $metric): bool => ($metric['method'] ?? null) === 'tools/call';
+        $provenance['endpoint_guard_dns_ms'] = $sum('endpoint_guard_ms');
+        $provenance['http_ms'] = $sum('http_ms');
+        $provenance['decode_ms'] = $sum('decode_ms');
+        $provenance['discovery_ms'] = array_sum(array_map(
+            static fn (mixed $metric): int => is_array($metric) && $isDiscovery($metric) ? $duration($metric) : 0,
+            $metrics,
+        ));
+        $provenance['tool_call_ms'] = array_sum(array_map(
+            static fn (mixed $metric): int => is_array($metric) && $isToolCall($metric) ? $duration($metric) : 0,
+            $metrics,
+        ));
+
+        return $provenance;
+    }
+
+    private function requiresRenegotiation(McpRemoteErrorException $exception): bool
+    {
+        if ($exception->rpcCode === -32601) {
+            return true;
+        }
+
+        return $exception->rpcCode === -32602
+            && preg_match('/\b(protocol|version|method)\b/i', $exception->getMessage()) === 1;
+    }
+
+    private function persistNegotiation(McpConnection $connection, McpClient $client): void
+    {
+        $negotiated = $client->negotiatedProtocol();
+        if ($negotiated === null) {
+            return;
+        }
+        $connection->server->forceFill([
+            'negotiated_era' => $negotiated->era->value,
+            'negotiated_version' => $negotiated->protocolVersion,
+            'capabilities_json' => $negotiated->capabilities,
+            'server_info_json' => $negotiated->serverInfo,
+            'last_discovered_at' => now(),
+        ])->save();
+        $connection->forceFill(['last_discovered_at' => now()])->save();
+    }
+
+    private function failureCode(\Throwable $exception): string
+    {
+        if ($exception instanceof McpAuthorizationException) {
+            return $exception->oauthError === 'insufficient_scope'
+                ? 'oauth_insufficient_scope'
+                : 'oauth_authorization_required';
+        }
+        if ($exception instanceof McpRemoteErrorException) {
+            return 'mcp_remote_error';
+        }
+
+        return 'mcp_transport_error';
+    }
+
+    private function elapsedMs(float $startedAt): int
+    {
+        return max(0, (int) round((microtime(true) - $startedAt) * 1000));
     }
 
     private function assertRuntimeActive(): void
