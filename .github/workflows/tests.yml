@@ -5,7 +5,7 @@ name: tests
 # cannot silently fall back to the incompatible v1.5 main branch.
 env:
   MCP_PACK_REPOSITORY: bramato/askmydocs-mcp-pack
-  MCP_PACK_REF: 8dbd400767c6362761a097f56a812579fc1a23c3
+  MCP_PACK_REF: 82cf9cd085557606fbb3ed9d10650d6e572c65a8
 
 on:
   push:

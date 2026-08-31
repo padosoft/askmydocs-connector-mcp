@@ -121,7 +121,7 @@ final readonly class McpToolExecutor
                 $clients[] = $client;
                 $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
             }
-            if (($cacheHits[0] ?? false) === false) {
+            if ($cacheHits[0] === false) {
                 $this->persistNegotiation($connection, $client);
             }
             $runtimeProvenance = array_replace(
@@ -352,7 +352,10 @@ final readonly class McpToolExecutor
      */
     private function clientProvenance(array $clients, array $cacheHits, ?int $toolCallMs): array
     {
-        $client = $clients[array_key_last($clients)];
+        if ($clients === []) {
+            throw new \LogicException('At least one MCP client is required to build invocation provenance.');
+        }
+        $client = $clients[count($clients) - 1];
         $negotiated = $client->negotiatedProtocol();
         $provenance = [
             'negotiation_cache_hit' => ($cacheHits[0] ?? false) === true,

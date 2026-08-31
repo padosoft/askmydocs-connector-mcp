@@ -14,6 +14,7 @@ use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
  * @property int $mcp_connector_connection_id
  * @property string $remote_name
  * @property string $local_name
+ * @property string|null $title
  * @property string|null $description
  * @property array<string,mixed> $input_schema_json
  * @property array<string,mixed>|null $output_schema_json
@@ -22,7 +23,12 @@ use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
  * @property string $risk
  * @property string $policy
  * @property bool $enabled
+ * @property bool $read_only
+ * @property bool $idempotent
+ * @property bool $destructive
  * @property bool $confirmation_required
+ * @property Carbon|null $discovered_at
+ * @property Carbon|null $last_seen_at
  * @property Carbon|null $removed_at
  * @property McpConnection $connection
  */
