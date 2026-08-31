@@ -120,6 +120,8 @@ final readonly class McpToolExecutor
                 $cacheHits[] = false;
                 $clients[] = $client;
                 $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
+            }
+            if (($cacheHits[0] ?? false) === false) {
                 $this->persistNegotiation($connection, $client);
             }
             $runtimeProvenance = array_replace(
@@ -433,7 +435,10 @@ final readonly class McpToolExecutor
             'server_info_json' => $negotiated->serverInfo,
             'last_discovered_at' => now(),
         ])->save();
-        $connection->forceFill(['last_discovered_at' => now()])->save();
+        $connection->forceFill([
+            'last_discovered_at' => now(),
+            'catalog_hash' => $this->fingerprint->forConnection($connection),
+        ])->save();
     }
 
     private function failureCode(\Throwable $exception): string

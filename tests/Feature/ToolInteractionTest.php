@@ -132,6 +132,7 @@ final class ToolInteractionTest extends TestCase
         $this->markCatalogCurrent($connection);
         $transport = new InteractionTransport([
             ['content' => [['type' => 'text', 'text' => 'Found.']]],
+            ['content' => [['type' => 'text', 'text' => 'Found from warm cache.']]],
             ['content' => [['type' => 'text', 'text' => 'Found after catalog change.']]],
         ]);
         McpClient::useTransportResolver(static fn () => $transport);
@@ -162,6 +163,17 @@ final class ToolInteractionTest extends TestCase
             McpToolInvocationFinished::class,
             static fn (McpToolInvocationFinished $event): bool => $event->provenance['negotiation_cache_hit'] === false
                 && $event->provenance['physical_request_count'] === 2,
+        );
+
+        app(McpToolExecutor::class)->invoke($tool->local_name, [], $actor, 'conversation-1');
+        $this->assertSame(
+            ['tools/call', 'server/discover', 'tools/call', 'tools/call'],
+            $transport->methods(),
+        );
+        Event::assertDispatched(
+            McpToolInvocationFinished::class,
+            static fn (McpToolInvocationFinished $event): bool => $event->provenance['negotiation_cache_hit'] === true
+                && $event->provenance['physical_request_count'] === 1,
         );
     }
 
