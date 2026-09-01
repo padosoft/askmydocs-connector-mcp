@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorMcp\Services;
 
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\SafeHttpClientContract;
@@ -13,7 +14,11 @@ use Psr\Http\Message\ResponseInterface;
 
 final class SafeHttpClient implements SafeHttpClientContract
 {
-    public function __construct(private readonly McpEndpointSecurityGuard $guard) {}
+    /** @param (\Closure():PendingRequest)|null $requestFactory */
+    public function __construct(
+        private readonly McpEndpointSecurityGuard $guard,
+        private readonly ?\Closure $requestFactory = null,
+    ) {}
 
     /** @param array<string,string> $headers */
     public function get(string $url, array $headers = [], bool $personal = true): Response
@@ -69,7 +74,8 @@ final class SafeHttpClient implements SafeHttpClientContract
             }
 
             try {
-                $request = Http::connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5))
+                $request = $this->pendingRequest()
+                    ->connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5))
                     ->timeout((int) config('connector-mcp.http.timeout_seconds', 15))
                     ->withoutRedirecting()
                     ->withOptions($options)
@@ -111,6 +117,15 @@ final class SafeHttpClient implements SafeHttpClientContract
                 $form = [];
             }
         }
+    }
+
+    private function pendingRequest(): PendingRequest
+    {
+        if ($this->requestFactory === null) {
+            return Http::connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5));
+        }
+
+        return ($this->requestFactory)();
     }
 
     private function causedByResponseLimit(\Throwable $exception): bool

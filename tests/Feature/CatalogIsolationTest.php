@@ -70,6 +70,7 @@ final class CatalogIsolationTest extends TestCase
                 'collection_path' => 'items',
                 'authorization' => 'bypass',
             ],
+            'io.modelcontextprotocol/ui' => ['resourceUri' => 'ui://orders/list'],
         ]);
 
         $catalog = app(McpChatCatalogService::class)->forActor($actor, 'sales');
@@ -77,6 +78,8 @@ final class CatalogIsolationTest extends TestCase
         $this->assertSame('orders', data_get($catalog, '0.agentCapability.entity'));
         $this->assertSame('items', data_get($catalog, '0.agentCapability.collection_path'));
         $this->assertArrayNotHasKey('authorization', $catalog[0]['agentCapability']);
+        $this->assertArrayNotHasKey('askmydocs/agent-capability', $catalog[0]['_meta']);
+        $this->assertSame('ui://orders/list', $catalog[0]['_meta']['io.modelcontextprotocol/ui']['resourceUri']);
     }
 
     private function connection(McpServerDefinition $server, string $mode, ?TestUser $owner, ?string $project): McpConnection

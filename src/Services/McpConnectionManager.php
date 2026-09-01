@@ -37,13 +37,19 @@ final readonly class McpConnectionManager
      */
     public function createPersonal(array $attributes, Model $owner): McpConnection
     {
-        $this->assertPersonalConnectionLimit($owner);
+        return DB::transaction(function () use ($attributes, $owner): McpConnection {
+            $owner->newQuery()
+                ->whereKey($owner->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertPersonalConnectionLimit($owner);
 
-        if (isset($attributes['server_id'])) {
-            return $this->createPersonalForApprovedServer((int) $attributes['server_id'], $attributes, $owner);
-        }
+            if (isset($attributes['server_id'])) {
+                return $this->createPersonalForApprovedServer((int) $attributes['server_id'], $attributes, $owner);
+            }
 
-        return $this->create($attributes, 'personal', $owner, (string) $owner->getKey());
+            return $this->create($attributes, 'personal', $owner, (string) $owner->getKey());
+        }, 3);
     }
 
     private function assertPersonalConnectionLimit(Model $owner): void

@@ -193,6 +193,7 @@ final readonly class McpOAuthService
         if ($credential === null || (! $force && ! $credential->isExpired())) {
             return;
         }
+        $observedRotationVersion = (int) $credential->rotation_version;
         if (! is_string($credential->refresh_token) || $credential->refresh_token === '') {
             $this->markReauthorizationRequired($connection, 'refresh_token_unavailable');
             throw new \RuntimeException('The MCP OAuth connection requires reauthorization.');
@@ -211,8 +212,7 @@ final readonly class McpOAuthService
 
         $reauthorizationCode = null;
         try {
-            $rotate = $force ? 'rotate' : 'rotateExpired';
-            $this->vault->{$rotate}($connection, function (McpCredential $locked) use ($resource, $metadata, $client, $connection, &$reauthorizationCode): array {
+            $refresh = function (McpCredential $locked) use ($resource, $metadata, $client, $connection, &$reauthorizationCode): array {
                 if (! is_string($locked->refresh_token) || $locked->refresh_token === '') {
                     $reauthorizationCode = 'refresh_token_unavailable';
                     throw new \RuntimeException('The MCP OAuth refresh token is unavailable.');
@@ -243,7 +243,12 @@ final readonly class McpOAuthService
                 $payload['token_type'] = 'Bearer';
 
                 return $payload;
-            });
+            };
+            if ($force) {
+                $this->vault->rotateIfVersion($connection, $observedRotationVersion, $refresh);
+            } else {
+                $this->vault->rotateExpired($connection, $refresh);
+            }
         } catch (\Throwable $exception) {
             if ($reauthorizationCode !== null) {
                 $this->markReauthorizationRequired($connection, $reauthorizationCode);
@@ -601,9 +606,12 @@ final readonly class McpOAuthService
         $parts = parse_url($url);
         $scheme = strtolower((string) ($parts['scheme'] ?? ''));
         $host = strtolower((string) ($parts['host'] ?? ''));
+        $literalHost = trim($host, '[]');
+        $ipv4Loopback = filter_var($literalHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && str_starts_with($literalHost, '127.');
         $localHttp = $scheme === 'http'
             && (bool) config('connector-mcp.oauth.allow_insecure_local', false)
-            && ($host === 'localhost' || $host === '::1' || str_starts_with($host, '127.'));
+            && ($literalHost === 'localhost' || $literalHost === '::1' || $ipv4Loopback);
         if (! is_array($parts) || ($scheme !== 'https' && ! $localHttp) || $host === '') {
             throw new \RuntimeException("OAuth {$label} must be an absolute HTTPS URL.");
         }

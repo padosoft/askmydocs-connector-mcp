@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorMcp\Tests\Feature;
 
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Psr7\Response as PsrResponse;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorMcp\Exceptions\McpResponseTooLargeException;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpEndpointSecurityGuard;
@@ -25,6 +28,28 @@ final class SafeHttpClientTest extends TestCase
 
         $this->expectException(McpResponseTooLargeException::class);
         $this->expectExceptionMessage('8 byte limit');
+        $client->get('https://public.example.test/mcp');
+    }
+
+    public function test_streaming_handler_aborts_as_soon_as_multiple_chunks_cross_the_limit(): void
+    {
+        config()->set('connector-mcp.http.max_response_bytes', 8);
+        $handler = static function ($request, array $options) {
+            $response = new PsrResponse(200);
+            $options['on_headers']($response);
+            $options['sink']->write('12345');
+            $options['sink']->write('6789');
+
+            return Create::promiseFor($response);
+        };
+        $client = new SafeHttpClient(
+            new McpEndpointSecurityGuard(static fn (string $host): array => ['8.8.8.8']),
+            static fn (): PendingRequest => (new PendingRequest)->setHandler($handler),
+        );
+
+        $this->expectException(McpResponseTooLargeException::class);
+        $this->expectExceptionMessage('8 byte limit');
+
         $client->get('https://public.example.test/mcp');
     }
 

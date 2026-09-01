@@ -243,6 +243,7 @@ final class ToolInteractionTest extends TestCase
 
         $this->assertSame('completed', $outcome->status);
         $this->assertSame(['tools/call', 'server/discover', 'tools/call'], $transport->methods());
+        $this->assertSame(['tools' => []], $server->fresh()->capabilities_json);
         Event::assertDispatched(
             McpToolInvocationFinished::class,
             static fn (McpToolInvocationFinished $event): bool => $event->provenance['recovery'] === 'renegotiated'

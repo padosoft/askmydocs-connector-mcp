@@ -64,6 +64,29 @@ final class McpCredentialVaultTest extends TestCase
         app(McpCredentialVault::class)->accessToken($connection);
     }
 
+    public function test_forced_rotation_is_skipped_when_another_request_already_advanced_the_version(): void
+    {
+        $connection = $this->connection();
+        $vault = app(McpCredentialVault::class);
+        $vault->put($connection, 'first-access', 'first-refresh', now()->addHour());
+        $vault->rotate($connection, static fn (): array => [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 3600,
+        ]);
+        $called = false;
+
+        $credential = $vault->rotateIfVersion($connection, 0, static function () use (&$called): array {
+            $called = true;
+
+            return ['access_token' => 'must-not-be-used'];
+        });
+
+        $this->assertFalse($called);
+        $this->assertSame('rotated-access', $credential->access_token);
+        $this->assertSame(1, $credential->rotation_version);
+    }
+
     private function connection(): McpConnection
     {
         app(TenantContext::class)->set('acme');

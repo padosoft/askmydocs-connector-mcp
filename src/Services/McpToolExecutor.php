@@ -121,7 +121,7 @@ final readonly class McpToolExecutor
                 $clients[] = $client;
                 $result = $client->callToolResult((string) $tool->remote_name, $arguments, $continuation);
             }
-            if ($cacheHits[0] === false) {
+            if (in_array(false, $cacheHits, true)) {
                 $this->persistNegotiation($connection, $client);
             }
             $runtimeProvenance = array_replace(
