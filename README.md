@@ -32,7 +32,8 @@ The connector runtime is operational behind
 - protected-resource, authorization-server/OIDC and CIMD/DCR discovery;
 - refresh-token rotation under a database lock and single-use callback state;
 - automatic MCP modern/legacy negotiation through `askmydocs-mcp-pack`;
-- paginated tool discovery, deterministic local names and risk-based policy;
+- paginated and item-bounded tool discovery, deterministic local names and
+  risk-based policy;
 - live tool calls, write confirmation, MRTR continuation and task recognition;
 - capped LLM text plus private artifacts and signed references for binary media;
 - governed resource catalogues and bounded, redacted resource ingest;
@@ -79,6 +80,18 @@ tools returned for the user's OAuth identity
 Discovered annotations are persisted but remain untrusted input. Unknown or
 write-like tools default to disabled and confirmation-required.
 
+### Optional agent capability hints
+
+An MCP server may add a compact advisory routing hint under
+`_meta["askmydocs/agent-capability"]`. The connector validates and exposes only
+the following fields to hosts: `entity`, `operation`, `intent_tags`, `requires`,
+`produces`, `collection_path`, `identity_fields` and `next_tools`. Supported
+operations are `search`, `list`, `get`, `detail`, `summary`, `count` and `check`.
+
+Hints are optional and never override authentication, tenant/project scope,
+risk, read-only annotations or confirmation policy. Standard MCP tools without
+this extension remain fully supported through host-side schema inference.
+
 ## Local development
 
 The sibling `askmydocs-mcp-pack` repository is resolved through a Composer path
@@ -107,16 +120,49 @@ override with the released `padosoft/askmydocs-mcp-pack:^2.0` dependency.
 
 All product routes are feature-gated and authenticated except the feature-gated
 CIMD document. Personal owner identity is always taken from the authenticated
-session, never from request input.
+session, never from request input. Connection creation and discovery are
+rate-limited, and each owner has a configurable personal connection quota.
+
+Connection creation accepts an explicit `auth_method` of `oauth`, `bearer` or
+`none`. OAuth creation stores a pending connection and returns a server-generated
+`next_action.authorization_url`; clients must navigate to that URL instead of
+handling authorization codes or tokens themselves. The callback uses PKCE,
+single-use state bound to the authenticated owner, tenant, issuer and MCP
+resource, then stores the resulting Bearer/refresh tokens only in encrypted
+server-side credentials. Existing clients that omit `auth_method` remain
+compatible: a supplied Bearer token selects `bearer`, otherwise `none`.
+
+The principal resource controls can be tuned with:
+
+```dotenv
+MCP_CONNECTOR_OAUTH_ENABLED=true
+MCP_CONNECTOR_OAUTH_ALLOW_INSECURE_LOCAL=false
+MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=10
+MCP_CONNECTOR_DISCOVERY_RATE_LIMIT=10
+MCP_CONNECTOR_MAX_CATALOG_ITEMS=1000
+```
+
+`MCP_CONNECTOR_OAUTH_ALLOW_INSECURE_LOCAL` is intended only for loopback
+development and test providers. Production authorization, token and dynamic
+registration endpoints must use HTTPS. Hosts may provide pre-registered clients
+through `connector-mcp.oauth.clients`, keyed by the exact issuer; these take
+priority over CIMD and dynamic client registration.
+
+Setting `MCP_CONNECTOR_MAX_PERSONAL_CONNECTIONS=0` disables the per-owner
+connection quota. The discovery rate is measured per authenticated user, with
+an IP fallback, by Laravel's standard throttle middleware.
 
 ## Security posture
 
 Personal endpoints require public HTTPS. DNS A/AAAA answers and every outbound
 OAuth request/redirect are checked against private, loopback, link-local,
-reserved and metadata addresses. Redirects are capped and credentials are
-removed on origin changes. Shared internal hosts require an explicit admin
-allowlist. Tokens, PKCE verifiers, client secrets, legacy headers and pending
-continuations use Laravel encrypted casts and are never returned by the API.
+reserved and metadata addresses. Public DNS answers are pinned into the cURL
+connection to prevent rebinding between validation and connect. Redirects are
+revalidated and capped, credentials are removed on origin changes, and response
+bodies are written through a hard-size-limited stream. Shared internal hosts
+require an explicit admin allowlist. Tokens, PKCE verifiers, client secrets,
+legacy headers and pending continuations use Laravel encrypted casts and are
+never returned by the API.
 
 ## License
 

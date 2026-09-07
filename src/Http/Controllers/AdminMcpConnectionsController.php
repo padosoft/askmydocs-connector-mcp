@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Padosoft\AskMyDocsConnectorBase\ConnectorSyncJob;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Http\Controllers\Concerns\ResolvesActor;
@@ -16,6 +17,7 @@ use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionResource;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpConnectionManager;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpDiscoveryService;
+use Padosoft\AskMyDocsConnectorMcp\Services\McpOAuthService;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpResourceCatalogService;
 use Padosoft\AskMyDocsConnectorMcp\Services\McpToolGovernanceService;
 
@@ -27,6 +29,7 @@ final class AdminMcpConnectionsController extends Controller
         private readonly TenantContext $tenantContext,
         private readonly McpConnectionManager $connections,
         private readonly McpDiscoveryService $discovery,
+        private readonly McpOAuthService $oauth,
         private readonly McpToolGovernanceService $governance,
         private readonly McpResourceCatalogService $resources,
     ) {}
@@ -51,11 +54,65 @@ final class AdminMcpConnectionsController extends Controller
             'endpoint' => ['required', 'string', 'max:2048'],
             'transport' => ['nullable', 'string'],
             'project_key' => ['nullable', 'string', 'max:100'],
+            'auth_method' => ['nullable', 'in:none,bearer,oauth'],
             'bearer' => ['nullable', 'string', 'max:8192'],
+            'scopes' => ['nullable', 'array'],
+            'scopes.*' => ['string', 'max:191'],
+            'ui_destination' => ['nullable', 'string', 'max:2048'],
         ]);
-        $connection = $this->connections->createShared($data, (string) $this->actor($request)->getKey());
+        $actor = $this->actor($request);
+        $authMethod = $this->authMethod($data);
+        if ($authMethod === 'oauth') {
+            abort_unless((bool) config('connector-mcp.oauth.enabled', true), 404);
+        }
+        $data['auth_method'] = $authMethod;
+        $connection = $this->connections->createShared($data, (string) $actor->getKey());
+
+        if ($authMethod === 'oauth') {
+            try {
+                $start = $this->oauth->begin(
+                    $connection,
+                    $actor,
+                    array_values(array_filter($data['scopes'] ?? [], 'is_string')),
+                    uiDestination: $data['ui_destination'] ?? null,
+                );
+            } catch (\Throwable $exception) {
+                $this->connections->delete($connection);
+                throw $exception;
+            }
+
+            return response()->json([
+                'connection' => $connection->load(['tools', 'resources']),
+                'tools' => [],
+                'resources' => [],
+                'authorization_required' => true,
+                'next_action' => [
+                    'type' => 'oauth_redirect',
+                    'authorization_url' => $start->authorizationUrl,
+                    'expires_at' => $start->expiresAt,
+                ],
+            ], 201);
+        }
 
         return $this->connectCreated($connection);
+    }
+
+    /** @param array<string,mixed> $data */
+    private function authMethod(array $data): string
+    {
+        $method = $data['auth_method'] ?? null;
+        $method = is_string($method) && $method !== ''
+            ? $method
+            : (is_string($data['bearer'] ?? null) && trim($data['bearer']) !== '' ? 'bearer' : 'none');
+        $bearer = is_string($data['bearer'] ?? null) ? trim($data['bearer']) : '';
+        if ($method === 'bearer' && $bearer === '') {
+            throw ValidationException::withMessages(['bearer' => ['A Bearer token is required.']]);
+        }
+        if ($method !== 'bearer' && $bearer !== '') {
+            throw ValidationException::withMessages(['bearer' => ['Remove the Bearer token or select Bearer authentication.']]);
+        }
+
+        return $method;
     }
 
     public function update(Request $request, string $connection): JsonResponse

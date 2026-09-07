@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
@@ -24,9 +25,12 @@ use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
  * @property string $label
  * @property string|null $project_key
  * @property string $status
+ * @property string|null $catalog_hash
  * @property array<string,mixed>|null $error_json
  * @property array<string,mixed>|null $granted_scopes_json
  * @property array<string,mixed>|null $account_metadata_json
+ * @property Carbon|null $last_authorized_at
+ * @property Carbon|null $last_discovered_at
  * @property McpServerDefinition $server
  * @property ConnectorInstallation|null $installation
  */
@@ -61,6 +65,7 @@ final class McpConnection extends Model
         'status',
         'last_authorized_at',
         'last_discovered_at',
+        'catalog_hash',
         'error_json',
     ];
 

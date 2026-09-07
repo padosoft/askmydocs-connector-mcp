@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorMcp\Exceptions\PersonalMcpConnectionLimitExceeded;
 use Padosoft\AskMyDocsConnectorMcp\McpConnector;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnection;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpServerDefinition;
@@ -36,11 +37,37 @@ final readonly class McpConnectionManager
      */
     public function createPersonal(array $attributes, Model $owner): McpConnection
     {
-        if (isset($attributes['server_id'])) {
-            return $this->createPersonalForApprovedServer((int) $attributes['server_id'], $attributes, $owner);
+        return DB::transaction(function () use ($attributes, $owner): McpConnection {
+            $owner->newQuery()
+                ->whereKey($owner->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertPersonalConnectionLimit($owner);
+
+            if (isset($attributes['server_id'])) {
+                return $this->createPersonalForApprovedServer((int) $attributes['server_id'], $attributes, $owner);
+            }
+
+            return $this->create($attributes, 'personal', $owner, (string) $owner->getKey());
+        }, 3);
+    }
+
+    private function assertPersonalConnectionLimit(Model $owner): void
+    {
+        $limit = max(0, (int) config('connector-mcp.personal_connections.max_per_owner', 10));
+        if ($limit === 0) {
+            return;
         }
 
-        return $this->create($attributes, 'personal', $owner, (string) $owner->getKey());
+        $count = McpConnection::query()
+            ->where('tenant_id', $this->tenantContext->current())
+            ->where('mode', 'personal')
+            ->where('owner_type', $owner->getMorphClass())
+            ->where('owner_id', $owner->getKey())
+            ->count();
+        if ($count >= $limit) {
+            throw new PersonalMcpConnectionLimitExceeded($limit);
+        }
     }
 
     /** @param array<string,mixed> $attributes */
@@ -84,7 +111,7 @@ final readonly class McpConnectionManager
         if ($mode === 'personal' && $transport === 'stdio_imported') {
             throw new \InvalidArgumentException('Personal MCP connections cannot use stdio.');
         }
-        $authMode = isset($attributes['bearer']) && trim((string) $attributes['bearer']) !== '' ? 'bearer' : 'none';
+        $authMode = $this->authMode($attributes);
         $tenant = $this->tenantContext->current();
 
         return DB::transaction(function () use ($attributes, $mode, $owner, $createdBy, $endpoint, $transport, $authMode, $tenant): McpConnection {
@@ -287,6 +314,29 @@ final readonly class McpConnectionManager
         if ((string) $connection->tenant_id !== $this->tenantContext->current()) {
             throw new AuthorizationException('MCP connection is outside the active tenant.');
         }
+    }
+
+    /** @param array<string,mixed> $attributes */
+    private function authMode(array $attributes): string
+    {
+        $requested = $attributes['auth_method'] ?? null;
+        if ($requested === null || $requested === '') {
+            return isset($attributes['bearer']) && trim((string) $attributes['bearer']) !== ''
+                ? 'bearer'
+                : 'none';
+        }
+        if (! is_string($requested) || ! in_array($requested, ['none', 'bearer', 'oauth'], true)) {
+            throw new \InvalidArgumentException('Unsupported MCP authentication method.');
+        }
+        $bearer = isset($attributes['bearer']) ? trim((string) $attributes['bearer']) : '';
+        if ($requested === 'bearer' && $bearer === '') {
+            throw new \InvalidArgumentException('Bearer authentication requires a token.');
+        }
+        if ($requested !== 'bearer' && $bearer !== '') {
+            throw new \InvalidArgumentException('A Bearer token may only be supplied with Bearer authentication.');
+        }
+
+        return $requested;
     }
 
     private function installationLabel(string $tenant, string $label, string $publicId, ?int $ignoreId = null): string

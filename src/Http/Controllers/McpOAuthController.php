@@ -29,6 +29,7 @@ final class McpOAuthController extends Controller
 
     public function begin(Request $request, string $connection): JsonResponse
     {
+        abort_unless((bool) config('connector-mcp.oauth.enabled', true), 404);
         $actor = $this->actor($request);
         $model = McpConnection::query()->with('server')
             ->where('tenant_id', $this->tenantContext->current())
@@ -63,26 +64,44 @@ final class McpOAuthController extends Controller
 
     public function callback(Request $request): RedirectResponse
     {
+        abort_unless((bool) config('connector-mcp.oauth.enabled', true), 404);
         $state = $request->query('state');
-        $code = $request->query('code');
-        if (! is_string($state) || ! is_string($code)) {
-            abort(422, 'OAuth callback is missing state or code.');
+        if (! is_string($state)) {
+            abort(422, 'OAuth callback is missing state.');
         }
         $issuer = $request->query('iss');
+        $error = $request->query('error');
+        if (is_string($error) && $error !== '') {
+            $result = $this->oauth->deniedCallback(
+                $state,
+                $error,
+                $this->actor($request),
+                is_string($issuer) ? $issuer : null,
+            );
+
+            return $this->redirectResult($result);
+        }
+        $code = $request->query('code');
+        if (! is_string($code)) {
+            abort(422, 'OAuth callback is missing code.');
+        }
         $result = $this->oauth->callback($state, $code, $this->actor($request), is_string($issuer) ? $issuer : null);
+        if ($result['status'] !== 'authorized') {
+            return $this->redirectResult($result);
+        }
         try {
             $this->discovery->discover($result['connection']);
-            $status = 'connected';
+            $result['status'] = 'connected';
         } catch (\Throwable) {
-            $status = 'discovery_failed';
+            $result['status'] = 'discovery_failed';
         }
-        $separator = str_contains($result['destination'], '?') ? '&' : '?';
 
-        return redirect()->to($result['destination'].$separator.'mcp='.$status);
+        return $this->redirectResult($result);
     }
 
     public function clientMetadata(): JsonResponse
     {
+        abort_unless((bool) config('connector-mcp.oauth.enabled', true), 404);
         $callback = url((string) config('connector-mcp.oauth.callback_path'));
         $clientId = $this->oauth->clientMetadataUrl()
             ?? url((string) config('connector-mcp.oauth.client_metadata_path'));
@@ -97,5 +116,17 @@ final class McpOAuthController extends Controller
             'token_endpoint_auth_method' => 'none',
             'code_challenge_methods_supported' => ['S256'],
         ]);
+    }
+
+    /** @param array{connection:McpConnection,destination:string,status:string} $result */
+    private function redirectResult(array $result): RedirectResponse
+    {
+        $separator = str_contains($result['destination'], '?') ? '&' : '?';
+        $query = http_build_query([
+            'mcp' => $result['status'],
+            'mcp_connection' => $result['connection']->public_id,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        return redirect()->to($result['destination'].$separator.$query);
     }
 }

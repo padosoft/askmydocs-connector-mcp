@@ -69,6 +69,7 @@ final class McpOAuthServiceTest extends TestCase
             'https://auth.example.test/tenant',
         );
         $this->assertSame('/app/connected-apps', $callback['destination']);
+        $this->assertSame('authorized', $callback['status']);
         $this->assertSame('access-one', app(McpCredentialVault::class)->accessToken($connection));
         $this->assertSame('oauth', $connection->server()->value('auth_mode'));
 
@@ -79,6 +80,65 @@ final class McpOAuthServiceTest extends TestCase
             $owner,
             'https://auth.example.test/tenant',
         );
+    }
+
+    public function test_denied_callback_is_single_use_and_does_not_store_credentials(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', 'https://askmydocs.example/.well-known/mcp-client.json');
+        $this->metadataResponses($http);
+
+        [$connection, $owner] = $this->personalConnection();
+        $start = app(McpOAuthService::class)->begin($connection, $owner, uiDestination: '/app/connected-apps');
+        parse_str((string) parse_url($start->authorizationUrl, PHP_URL_QUERY), $query);
+
+        $result = app(McpOAuthService::class)->deniedCallback(
+            (string) $query['state'],
+            'access_denied',
+            $owner,
+            'https://auth.example.test/tenant',
+        );
+
+        $this->assertSame('oauth_denied', $result['status']);
+        $this->assertSame(McpConnection::STATUS_ERRORED, $connection->fresh()->status);
+        $this->assertSame('access_denied', $connection->fresh()->error_json['code']);
+        $this->assertNull(app(McpCredentialVault::class)->oauthCredential($connection));
+
+        $this->expectException(\RuntimeException::class);
+        app(McpOAuthService::class)->deniedCallback(
+            (string) $query['state'],
+            'access_denied',
+            $owner,
+            'https://auth.example.test/tenant',
+        );
+    }
+
+    public function test_non_bearer_token_response_is_rejected_without_exposing_the_token(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', 'https://askmydocs.example/.well-known/mcp-client.json');
+        $this->metadataResponses($http);
+        $http->respond('POST_FORM', 'https://auth.example.test/tenant/token', 200, [
+            'access_token' => 'must-not-be-stored',
+            'token_type' => 'DPoP',
+        ]);
+
+        [$connection, $owner] = $this->personalConnection();
+        $start = app(McpOAuthService::class)->begin($connection, $owner);
+        parse_str((string) parse_url($start->authorizationUrl, PHP_URL_QUERY), $query);
+        $result = app(McpOAuthService::class)->callback(
+            (string) $query['state'],
+            'code-one',
+            $owner,
+            'https://auth.example.test/tenant',
+        );
+
+        $this->assertSame('oauth_failed', $result['status']);
+        $this->assertSame('unsupported_token_type', $connection->fresh()->error_json['code']);
+        $this->assertNull(app(McpCredentialVault::class)->oauthCredential($connection));
+        $this->assertStringNotContainsString('must-not-be-stored', json_encode($result, JSON_THROW_ON_ERROR));
     }
 
     public function test_expired_oauth_credential_is_rotated_under_the_vault_lock(): void
@@ -110,6 +170,116 @@ final class McpOAuthServiceTest extends TestCase
         $this->assertSame('rotated-access', $credential?->access_token);
         $this->assertSame('rotated-refresh', $credential?->refresh_token);
         $this->assertSame(1, $credential?->rotation_version);
+    }
+
+    public function test_upstream_unauthorized_can_force_one_refresh_of_a_non_expired_token(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', 'https://askmydocs.example/.well-known/mcp-client.json');
+        $this->metadataResponses($http);
+        $http->respond('POST_FORM', 'https://auth.example.test/tenant/token', 200, [
+            'access_token' => 'forced-access',
+            'refresh_token' => 'forced-refresh',
+            'expires_in' => 7200,
+        ]);
+
+        [$connection] = $this->personalConnection();
+        $connection->server()->update(['auth_mode' => 'oauth']);
+        app(McpCredentialVault::class)->put(
+            connection: $connection,
+            accessToken: 'rejected-but-not-expired',
+            refreshToken: 'old-refresh',
+            expiresAt: now()->addHour(),
+            issuer: 'https://auth.example.test/tenant',
+            resource: 'https://mcp.example.test/mcp',
+        );
+
+        app(McpOAuthService::class)->refreshAfterUnauthorized($connection->fresh('server'));
+
+        $credential = app(McpCredentialVault::class)->oauthCredential($connection);
+        $this->assertSame('forced-access', $credential?->access_token);
+        $this->assertSame('forced-refresh', $credential?->refresh_token);
+        $this->assertSame(1, $credential?->rotation_version);
+    }
+
+    public function test_invalid_grant_marks_the_connection_for_reauthorization(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', 'https://askmydocs.example/.well-known/mcp-client.json');
+        $this->metadataResponses($http);
+        $http->respond('POST_FORM', 'https://auth.example.test/tenant/token', 400, [
+            'error' => 'invalid_grant',
+        ]);
+
+        [$connection] = $this->personalConnection();
+        $connection->server()->update(['auth_mode' => 'oauth']);
+        app(McpCredentialVault::class)->put(
+            connection: $connection,
+            accessToken: 'expired-access',
+            refreshToken: 'expired-refresh',
+            expiresAt: now()->subMinute(),
+            issuer: 'https://auth.example.test/tenant',
+            resource: 'https://mcp.example.test/mcp',
+        );
+
+        try {
+            app(McpOAuthService::class)->refreshIfNeeded($connection->fresh('server'));
+            $this->fail('The rejected refresh should fail.');
+        } catch (\RuntimeException) {
+            $this->assertSame(McpConnection::STATUS_REAUTHORIZATION_REQUIRED, $connection->fresh()->status);
+            $this->assertSame('invalid_grant', $connection->fresh()->error_json['code']);
+        }
+    }
+
+    public function test_pre_registered_client_is_preferred_when_cimd_and_dcr_are_unavailable(): void
+    {
+        $http = new OAuthFakeHttpClient;
+        $this->app->instance(SafeHttpClientContract::class, $http);
+        config()->set('connector-mcp.oauth.client_metadata_url', null);
+        config()->set('connector-mcp.oauth.clients', [
+            'https://auth.example.test/tenant' => [
+                'client_id' => 'askmydocs-registered',
+                'client_secret' => 'registered-secret',
+            ],
+        ]);
+        $http->respond('GET', 'https://mcp.example.test/.well-known/oauth-protected-resource/mcp', 200, [
+            'resource' => 'https://mcp.example.test/mcp',
+            'authorization_servers' => ['https://auth.example.test/tenant'],
+        ]);
+        $http->respond('GET', 'https://auth.example.test/.well-known/oauth-authorization-server/tenant', 200, [
+            'issuer' => 'https://auth.example.test/tenant',
+            'authorization_endpoint' => 'https://auth.example.test/tenant/authorize',
+            'token_endpoint' => 'https://auth.example.test/tenant/token',
+            'code_challenge_methods_supported' => ['S256'],
+        ]);
+
+        [$connection, $owner] = $this->personalConnection();
+        $start = app(McpOAuthService::class)->begin($connection, $owner);
+        parse_str((string) parse_url($start->authorizationUrl, PHP_URL_QUERY), $query);
+
+        $this->assertSame('askmydocs-registered', $query['client_id']);
+        $this->assertSame('registered-secret', McpOAuthAttempt::query()->firstOrFail()->client_secret);
+        $this->assertArrayNotHasKey('client_secret', McpOAuthAttempt::query()->firstOrFail()->toArray());
+    }
+
+    public function test_runtime_scope_challenge_is_retained_for_step_up_authorization(): void
+    {
+        [$connection] = $this->personalConnection();
+        $connection->server()->update(['auth_mode' => 'oauth']);
+
+        app(McpOAuthService::class)->requireReauthorization(
+            $connection->fresh('server'),
+            'Bearer error="insufficient_scope", scope="orders:read orders:detail"',
+            403,
+        );
+
+        $fresh = $connection->fresh('server');
+        $this->assertSame(McpConnection::STATUS_REAUTHORIZATION_REQUIRED, $fresh->status);
+        $this->assertSame('insufficient_scope', $fresh->error_json['code']);
+        $this->assertSame(['orders:read', 'orders:detail'], $fresh->error_json['required_scopes']);
+        $this->assertStringContainsString('orders:detail', $fresh->server->oauth_metadata_json['www_authenticate']);
     }
 
     private function metadataResponses(OAuthFakeHttpClient $http): void

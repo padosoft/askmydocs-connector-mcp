@@ -41,16 +41,25 @@ Route::middleware(array_merge([EnsureMcpConnectorEnabled::class], (array) config
         });
 
         Route::prefix('api/me/connected-apps/mcp')->group(function (): void {
+            $personalDiscoveryThrottle = 'throttle:'.max(
+                1,
+                (int) config('connector-mcp.personal_connections.discovery_requests_per_minute', 10),
+            ).',1';
+
             Route::get('/', [PersonalMcpConnectionsController::class, 'index']);
             Route::get('/catalog', [PersonalMcpConnectionsController::class, 'catalog']);
-            Route::post('/', [PersonalMcpConnectionsController::class, 'store']);
+            Route::post('/', [PersonalMcpConnectionsController::class, 'store'])
+                ->middleware($personalDiscoveryThrottle);
             Route::put('/{connection}', [PersonalMcpConnectionsController::class, 'update']);
-            Route::post('/{connection}/discover', [PersonalMcpConnectionsController::class, 'discover']);
-            Route::post('/{connection}/test', [PersonalMcpConnectionsController::class, 'discover']);
+            Route::post('/{connection}/discover', [PersonalMcpConnectionsController::class, 'discover'])
+                ->middleware($personalDiscoveryThrottle);
+            Route::post('/{connection}/test', [PersonalMcpConnectionsController::class, 'discover'])
+                ->middleware($personalDiscoveryThrottle);
             Route::post('/{connection}/disconnect', [PersonalMcpConnectionsController::class, 'disconnect']);
             Route::delete('/{connection}', [PersonalMcpConnectionsController::class, 'destroy']);
             Route::put('/{connection}/tools/{tool}', [PersonalMcpConnectionsController::class, 'setTool']);
-            Route::post('/{connection}/oauth', [McpOAuthController::class, 'begin']);
+            Route::post('/{connection}/oauth', [McpOAuthController::class, 'begin'])
+                ->middleware($personalDiscoveryThrottle);
         });
 
         Route::post('api/conversations/mcp/interactions/{interaction}', [McpInteractionController::class, 'respond']);

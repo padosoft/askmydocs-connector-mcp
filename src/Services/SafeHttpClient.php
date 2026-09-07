@@ -4,13 +4,21 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorMcp\Services;
 
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorMcp\Contracts\SafeHttpClientContract;
+use Padosoft\AskMyDocsConnectorMcp\Exceptions\McpResponseTooLargeException;
+use Padosoft\AskMyDocsConnectorMcp\Support\CappedResponseStream;
+use Psr\Http\Message\ResponseInterface;
 
 final class SafeHttpClient implements SafeHttpClientContract
 {
-    public function __construct(private readonly McpEndpointSecurityGuard $guard) {}
+    /** @param (\Closure():PendingRequest)|null $requestFactory */
+    public function __construct(
+        private readonly McpEndpointSecurityGuard $guard,
+        private readonly ?\Closure $requestFactory = null,
+    ) {}
 
     /** @param array<string,string> $headers */
     public function get(string $url, array $headers = [], bool $personal = true): Response
@@ -43,23 +51,50 @@ final class SafeHttpClient implements SafeHttpClientContract
     private function request(string $method, string $url, array $form, array $headers, bool $personal): Response
     {
         $maxRedirects = max(0, (int) config('connector-mcp.http.max_redirects', 3));
+        $maxResponseBytes = max(1, (int) config('connector-mcp.http.max_response_bytes', 2_000_000));
         $origin = $this->origin($url);
 
         for ($redirects = 0; ; $redirects++) {
-            // Resolve and validate immediately before every outbound request.
-            $this->guard->assertAllowed($url, $personal);
-            $request = Http::connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5))
-                ->timeout((int) config('connector-mcp.http.timeout_seconds', 15))
-                ->withoutRedirecting()
-                ->withHeaders($headers);
-            $response = match ($method) {
-                'POST_FORM' => $request->asForm()->post($url, $form),
-                'POST_JSON' => $request->asJson()->post($url, $form),
-                default => $request->get($url),
-            };
+            // Resolve immediately before the request and pin cURL to those exact
+            // public addresses so DNS cannot change between policy and connect.
+            $resolution = $this->guard->resolveAllowed($url, $personal);
+            $options = [
+                'allow_redirects' => false,
+                'sink' => new CappedResponseStream($maxResponseBytes),
+                'on_headers' => static function (ResponseInterface $response) use ($maxResponseBytes): void {
+                    $length = $response->getHeaderLine('Content-Length');
+                    if ($length !== '' && ctype_digit($length) && (int) $length > $maxResponseBytes) {
+                        throw McpResponseTooLargeException::forLimit($maxResponseBytes);
+                    }
+                },
+            ];
+            $resolveEntries = $resolution->curlResolveEntries();
+            if ($resolveEntries !== []) {
+                $options['curl'] = [CURLOPT_RESOLVE => $resolveEntries];
+            }
 
-            if (strlen($response->body()) > (int) config('connector-mcp.http.max_response_bytes', 2_000_000)) {
-                throw new \RuntimeException('MCP HTTP response exceeded the configured size limit.');
+            try {
+                $request = $this->pendingRequest()
+                    ->connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5))
+                    ->timeout((int) config('connector-mcp.http.timeout_seconds', 15))
+                    ->withoutRedirecting()
+                    ->withOptions($options)
+                    ->withHeaders($headers);
+                $response = match ($method) {
+                    'POST_FORM' => $request->asForm()->post($url, $form),
+                    'POST_JSON' => $request->asJson()->post($url, $form),
+                    default => $request->get($url),
+                };
+            } catch (\Throwable $exception) {
+                if ($this->causedByResponseLimit($exception)) {
+                    throw McpResponseTooLargeException::forLimit($maxResponseBytes);
+                }
+
+                throw $exception;
+            }
+
+            if (strlen($response->body()) > $maxResponseBytes) {
+                throw McpResponseTooLargeException::forLimit($maxResponseBytes);
             }
             if (! in_array($response->status(), [301, 302, 303, 307, 308], true)) {
                 return $response;
@@ -82,6 +117,27 @@ final class SafeHttpClient implements SafeHttpClientContract
                 $form = [];
             }
         }
+    }
+
+    private function pendingRequest(): PendingRequest
+    {
+        if ($this->requestFactory === null) {
+            return Http::connectTimeout((int) config('connector-mcp.http.connect_timeout_seconds', 5));
+        }
+
+        return ($this->requestFactory)();
+    }
+
+    private function causedByResponseLimit(\Throwable $exception): bool
+    {
+        do {
+            if ($exception instanceof McpResponseTooLargeException) {
+                return true;
+            }
+            $exception = $exception->getPrevious();
+        } while ($exception instanceof \Throwable);
+
+        return false;
     }
 
     private function origin(string $url): string

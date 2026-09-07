@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Services;
 use Illuminate\Database\Eloquent\Model;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorMcp\Models\McpConnectionTool;
+use Padosoft\AskMyDocsConnectorMcp\Support\McpAgentCapabilityHint;
 
 final readonly class McpChatCatalogService
 {
@@ -41,23 +42,29 @@ final readonly class McpChatCatalogService
             ->all();
         $tools = McpConnectionTool::query()->with(['connection.server'])->findMany($toolIds);
 
-        return array_values($tools->map(static fn (McpConnectionTool $tool): array => [
-            'name' => $tool->local_name,
-            'description' => $tool->description,
-            'inputSchema' => $tool->input_schema_json,
-            'outputSchema' => $tool->output_schema_json,
-            'annotations' => $tool->annotations_json,
-            '_meta' => $tool->meta_json,
-            'risk' => $tool->risk,
-            'confirmationRequired' => (bool) $tool->confirmation_required,
-            'source' => 'mcp',
-            'provenance' => [
-                'server_id' => $tool->connection->server->getKey(),
-                'server_name' => $tool->connection->server->name,
-                'connection_id' => $tool->connection->public_id,
-                'tool_remote_name' => $tool->remote_name,
-                'tool_local_name' => $tool->local_name,
-            ],
-        ])->all());
+        return array_values($tools->map(function (McpConnectionTool $tool): array {
+            $meta = is_array($tool->meta_json) ? $tool->meta_json : [];
+            unset($meta['askmydocs/agent-capability']);
+
+            return [
+                'name' => $tool->local_name,
+                'description' => $tool->description,
+                'inputSchema' => $tool->input_schema_json,
+                'outputSchema' => $tool->output_schema_json,
+                'annotations' => $tool->annotations_json,
+                '_meta' => $meta === [] ? null : $meta,
+                'agentCapability' => McpAgentCapabilityHint::fromMeta($tool->meta_json),
+                'risk' => $tool->risk,
+                'confirmationRequired' => (bool) $tool->confirmation_required,
+                'source' => 'mcp',
+                'provenance' => [
+                    'server_id' => $tool->connection->server->getKey(),
+                    'server_name' => $tool->connection->server->name,
+                    'connection_id' => $tool->connection->public_id,
+                    'tool_remote_name' => $tool->remote_name,
+                    'tool_local_name' => $tool->local_name,
+                ],
+            ];
+        })->all());
     }
 }

@@ -116,7 +116,19 @@ final class McpCredentialVault
      */
     public function rotate(McpConnection $connection, callable $refresh): McpCredential
     {
-        return $this->rotateLocked($connection, $refresh, false);
+        return $this->rotateLocked($connection, $refresh, false, null);
+    }
+
+    /**
+     * Rotates only when the credential is still at the version observed by the
+     * caller. This makes concurrent forced refreshes converge on the first
+     * successful rotation instead of reusing a one-time refresh token.
+     *
+     * @param  callable(McpCredential):array<string,mixed>  $refresh
+     */
+    public function rotateIfVersion(McpConnection $connection, int $observedVersion, callable $refresh): McpCredential
+    {
+        return $this->rotateLocked($connection, $refresh, false, $observedVersion);
     }
 
     /**
@@ -128,15 +140,15 @@ final class McpCredentialVault
      */
     public function rotateExpired(McpConnection $connection, callable $refresh): McpCredential
     {
-        return $this->rotateLocked($connection, $refresh, true);
+        return $this->rotateLocked($connection, $refresh, true, null);
     }
 
     /** @param callable(McpCredential):array<string,mixed> $refresh */
-    private function rotateLocked(McpConnection $connection, callable $refresh, bool $onlyIfExpired): McpCredential
+    private function rotateLocked(McpConnection $connection, callable $refresh, bool $onlyIfExpired, ?int $expectedVersion): McpCredential
     {
         $this->assertOwnedByCurrentTenant($connection);
 
-        return DB::transaction(function () use ($connection, $refresh, $onlyIfExpired): McpCredential {
+        return DB::transaction(function () use ($connection, $refresh, $onlyIfExpired, $expectedVersion): McpCredential {
             $credentialId = DB::table('mcp_connector_credentials')
                 ->where('tenant_id', $this->tenantContext->current())
                 ->where('mcp_connector_connection_id', $connection->getKey())
@@ -146,6 +158,9 @@ final class McpCredentialVault
                 throw new ModelNotFoundException;
             }
             $credential = McpCredential::query()->findOrFail($credentialId);
+            if ($expectedVersion !== null && (int) $credential->rotation_version !== $expectedVersion) {
+                return $credential;
+            }
             if ($onlyIfExpired && ! $credential->isExpired()) {
                 return $credential;
             }

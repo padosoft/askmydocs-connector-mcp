@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorMcp\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
 use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
 
 /**
@@ -18,7 +19,13 @@ use Padosoft\AskMyDocsConnectorBase\Models\Concerns\BelongsToTenant;
  * @property string $endpoint_hash
  * @property array<string,string>|null $legacy_headers_encrypted
  * @property array<string,mixed>|null $oauth_metadata_json
+ * @property string|null $negotiated_era
+ * @property string|null $negotiated_version
+ * @property array<string,mixed>|null $capabilities_json
+ * @property array<string,mixed>|null $server_info_json
  * @property string $status
+ * @property Carbon|null $last_discovered_at
+ * @property array<string,mixed>|null $error_json
  */
 final class McpServerDefinition extends Model
 {
